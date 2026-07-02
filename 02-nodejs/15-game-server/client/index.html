@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>MMO-Lite Game Client</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      color: #eee;
+      font-family: 'Courier New', monospace;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #header {
+      padding: 8px 16px;
+      background: #16213e;
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+    }
+    #header .status { color: #4ecca3; }
+    #header .stats { color: #999; }
+    #game-container {
+      flex: 1;
+      display: flex;
+      width: 100%;
+      overflow: hidden;
+    }
+    #canvas {
+      flex: 1;
+      background: #0f3460;
+    }
+    #sidebar {
+      width: 280px;
+      background: #16213e;
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid #333;
+    }
+    #chat-box {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+      font-size: 12px;
+    }
+    #chat-box .msg { margin-bottom: 4px; padding: 2px 0; }
+    #chat-box .msg .name { color: #4ecca3; font-weight: bold; }
+    #chat-box .msg .text { color: #ddd; }
+    #chat-box .msg.system { color: #e94560; font-style: italic; }
+    #chat-input-container {
+      display: flex;
+      border-top: 1px solid #333;
+    }
+    #chat-input {
+      flex: 1;
+      background: #0f3460;
+      border: none;
+      color: #eee;
+      padding: 8px;
+      font-size: 13px;
+      outline: none;
+    }
+    #chat-input::placeholder { color: #666; }
+    #login-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    #login-box {
+      background: #16213e;
+      padding: 32px;
+      border-radius: 8px;
+      text-align: center;
+    }
+    #login-box h2 { margin-bottom: 16px; color: #4ecca3; }
+    #login-box input {
+      background: #0f3460;
+      border: 1px solid #4ecca3;
+      color: #eee;
+      padding: 8px 16px;
+      font-size: 16px;
+      border-radius: 4px;
+      outline: none;
+      width: 200px;
+    }
+    #login-box button {
+      display: block;
+      margin: 16px auto 0;
+      background: #4ecca3;
+      color: #1a1a2e;
+      border: none;
+      padding: 8px 24px;
+      font-size: 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    #login-box p { margin-top: 12px; color: #666; font-size: 12px; }
+    #controls {
+      padding: 8px;
+      font-size: 11px;
+      color: #666;
+      border-top: 1px solid #333;
+    }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <span class="status" id="status">Connecting...</span>
+    <span class="stats" id="stats"></span>
+  </div>
+  <div id="game-container">
+    <canvas id="canvas"></canvas>
+    <div id="sidebar">
+      <div id="chat-box"></div>
+      <div id="controls">
+        WASD: 移动 | Space: 攻击 | Enter: 聊天
+      </div>
+      <div id="chat-input-container">
+        <input id="chat-input" placeholder="按 Enter 发送消息..." />
+      </div>
+    </div>
+  </div>
+
+  <div id="login-overlay">
+    <div id="login-box">
+      <h2>MMO-Lite</h2>
+      <input id="name-input" placeholder="输入你的名字" maxlength="16" />
+      <button id="join-btn">进入游戏</button>
+      <p>WASD 移动 · 空格攻击 · Enter 聊天</p>
+    </div>
+  </div>
+
+  <script>
+    const WS_URL = 'ws://localhost:4000';
+
+    // State
+    let ws = null;
+    let myId = null;
+    let players = {};
+    let mapWidth = 3000;
+    let mapHeight = 2000;
+    let camera = { x: 0, y: 0 };
+    let keys = {};
+    let connected = false;
+    let pingTime = 0;
+    let latency = 0;
+
+    // DOM
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const statsEl = document.getElementById('stats');
+    const chatBox = document.getElementById('chat-box');
+    const chatInput = document.getElementById('chat-input');
+    const loginOverlay = document.getElementById('login-overlay');
+    const nameInput = document.getElementById('name-input');
+    const joinBtn = document.getElementById('join-btn');
+
+    // Resize canvas
+    function resize() {
+      canvas.width = canvas.clientWidth;
+      canvas.height = canvas.clientHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Login
+    joinBtn.onclick = () => {
+      const name = nameInput.value.trim() || 'Player';
+      connect(name);
+      loginOverlay.style.display = 'none';
+    };
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') joinBtn.click();
+    });
+
+    function connect(name) {
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        connected = true;
+        statusEl.textContent = 'Connected';
+        ws.send(JSON.stringify({ type: 'join', data: { name } }));
+        startPing();
+      };
+
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        handleMessage(msg);
+      };
+
+      ws.onclose = () => {
+        connected = false;
+        statusEl.textContent = 'Disconnected';
+        addChatMsg(null, '与服务器断开连接', true);
+      };
+
+      ws.onerror = () => {
+        statusEl.textContent = 'Connection Error';
+      };
+    }
+
+    function handleMessage(msg) {
+      switch (msg.type) {
+        case 's_join':
+          myId = msg.data.self.id;
+          mapWidth = msg.data.mapWidth;
+          mapHeight = msg.data.mapHeight;
+          players[myId] = msg.data.self;
+          for (const p of msg.data.players) {
+            players[p.id] = p;
+          }
+          addChatMsg(null, `进入了游戏世界 (${mapWidth}x${mapHeight})`, true);
+          break;
+
+        case 's_enter':
+          players[msg.data.id] = msg.data;
+          break;
+
+        case 's_leave':
+          delete players[msg.data.id];
+          break;
+
+        case 's_state':
+          for (const p of msg.data.players) {
+            if (players[p.id]) {
+              // 平滑插值
+              const old = players[p.id];
+              old.targetX = p.x;
+              old.targetY = p.y;
+              old.hp = p.hp;
+              old.isDead = p.isDead;
+            } else {
+              players[p.id] = p;
+            }
+          }
+          break;
+
+        case 's_chat':
+          addChatMsg(msg.data.from, msg.data.text, false);
+          break;
+
+        case 's_damage':
+          // 视觉反馈
+          const target = players[msg.data.targetId];
+          if (target) {
+            target.hitFlash = 10;
+            target.hp = msg.data.targetHp;
+          }
+          break;
+
+        case 's_dead':
+          if (players[msg.data.id]) {
+            players[msg.data.id].isDead = true;
+          }
+          if (msg.data.id === myId) {
+            addChatMsg(null, '你死了！3秒后复活...', true);
+          }
+          break;
+
+        case 's_respawn':
+          players[msg.data.id] = msg.data;
+          if (msg.data.id === myId) {
+            addChatMsg(null, '已复活！', true);
+          }
+          break;
+
+        case 's_pong':
+          latency = Date.now() - (msg.data.time || pingTime);
+          break;
+
+        case 's_error':
+          addChatMsg(null, `错误: ${msg.data.msg}`, true);
+          break;
+      }
+    }
+
+    function addChatMsg(name, text, isSystem) {
+      const div = document.createElement('div');
+      div.className = 'msg' + (isSystem ? ' system' : '');
+      if (isSystem) {
+        div.textContent = `[系统] ${text}`;
+      } else {
+        div.innerHTML = `<span class="name">${name}:</span> <span class="text">${text}</span>`;
+      }
+      chatBox.appendChild(div);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    // Input
+    document.addEventListener('keydown', (e) => {
+      if (document.activeElement === chatInput) {
+        if (e.key === 'Enter') {
+          const text = chatInput.value.trim();
+          if (text && ws) {
+            ws.send(JSON.stringify({ type: 'c_chat', data: { text } }));
+            chatInput.value = '';
+          }
+          chatInput.blur();
+        }
+        return;
+      }
+
+      if (e.key === 'Enter') {
+        chatInput.focus();
+        return;
+      }
+
+      keys[e.key.toLowerCase()] = true;
+
+      if (e.key === ' ') {
+        e.preventDefault();
+        if (ws && connected) {
+          ws.send(JSON.stringify({ type: 'c_attack' }));
+        }
+      }
+    });
+
+    document.addEventListener('keyup', (e) => {
+      keys[e.key.toLowerCase()] = false;
+    });
+
+    // Send movement input
+    function sendInput() {
+      if (!ws || !connected || !myId) return;
+      if (document.activeElement === chatInput) return;
+
+      let dx = 0, dy = 0;
+      if (keys['w'] || keys['arrowup']) dy = -1;
+      if (keys['s'] || keys['arrowdown']) dy = 1;
+      if (keys['a'] || keys['arrowleft']) dx = -1;
+      if (keys['d'] || keys['arrowright']) dx = 1;
+
+      if (dx !== 0 || dy !== 0) {
+        ws.send(JSON.stringify({ type: 'c_move', data: { dx, dy } }));
+      } else if (players[myId] && (players[myId]._moving)) {
+        ws.send(JSON.stringify({ type: 'c_stop' }));
+        players[myId]._moving = false;
+      }
+
+      if (dx !== 0 || dy !== 0) {
+        if (players[myId]) players[myId]._moving = true;
+      }
+    }
+
+    // Ping
+    function startPing() {
+      setInterval(() => {
+        if (ws && connected) {
+          pingTime = Date.now();
+          ws.send(JSON.stringify({ type: 'c_ping', data: { time: pingTime } }));
+        }
+      }, 3000);
+    }
+
+    // Render loop
+    function render() {
+      resize();
+      const W = canvas.width;
+      const H = canvas.height;
+
+      // Camera follows player
+      const me = players[myId];
+      if (me) {
+        camera.x = (me.targetX || me.x) - W / 2;
+        camera.y = (me.targetY || me.y) - H / 2;
+      }
+
+      ctx.clearRect(0, 0, W, H);
+
+      // Draw background grid
+      ctx.strokeStyle = '#1a3a5c';
+      ctx.lineWidth = 1;
+      const gridSize = 100;
+      const startX = -(camera.x % gridSize);
+      const startY = -(camera.y % gridSize);
+      for (let x = startX; x < W; x += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, H);
+        ctx.stroke();
+      }
+      for (let y = startY; y < H; y += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
+        ctx.stroke();
+      }
+
+      // Draw map boundary
+      ctx.strokeStyle = '#e94560';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(-camera.x, -camera.y, mapWidth, mapHeight);
+
+      // Draw players
+      for (const id of Object.keys(players)) {
+        const p = players[id];
+        if (!p) continue;
+
+        // Interpolate position
+        if (p.targetX !== undefined) {
+          p.x += (p.targetX - p.x) * 0.3;
+          p.y += (p.targetY - p.y) * 0.3;
+        }
+
+        const sx = p.x - camera.x;
+        const sy = p.y - camera.y;
+
+        // Skip if off screen
+        if (sx < -50 || sx > W + 50 || sy < -50 || sy > H + 50) continue;
+
+        // Hit flash
+        if (p.hitFlash && p.hitFlash > 0) {
+          p.hitFlash--;
+        }
+
+        const isMe = parseInt(id) === myId;
+        const radius = 16;
+
+        // Body
+        ctx.beginPath();
+        ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+        if (p.isDead) {
+          ctx.fillStyle = '#333';
+        } else if (p.hitFlash > 0) {
+          ctx.fillStyle = '#ff6666';
+        } else if (isMe) {
+          ctx.fillStyle = '#4ecca3';
+        } else {
+          ctx.fillStyle = '#e94560';
+        }
+        ctx.fill();
+
+        // Border
+        ctx.strokeStyle = isMe ? '#fff' : '#aaa';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Name
+        ctx.fillStyle = '#fff';
+        ctx.font = '11px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText(p.name || `P${id}`, sx, sy - radius - 14);
+
+        // HP bar
+        if (!p.isDead) {
+          const barW = 32;
+          const barH = 4;
+          const barX = sx - barW / 2;
+          const barY = sy - radius - 8;
+          ctx.fillStyle = '#333';
+          ctx.fillRect(barX, barY, barW, barH);
+          const hpRatio = (p.hp || 0) / (p.maxHp || 100);
+          ctx.fillStyle = hpRatio > 0.5 ? '#4ecca3' : hpRatio > 0.2 ? '#f0a500' : '#e94560';
+          ctx.fillRect(barX, barY, barW * hpRatio, barH);
+        }
+
+        // Dead indicator
+        if (p.isDead) {
+          ctx.fillStyle = '#e94560';
+          ctx.font = '14px Courier New';
+          ctx.fillText('☠', sx, sy + 5);
+        }
+      }
+
+      // HUD
+      statsEl.textContent = `Ping: ${latency}ms | Players: ${Object.keys(players).length}`;
+
+      requestAnimationFrame(render);
+    }
+
+    // Input loop (50ms = 20Hz, matches server tick rate)
+    setInterval(sendInput, 50);
+
+    // Start render
+    render();
+  </script>
+</body>
+</html>

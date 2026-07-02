@@ -1,0 +1,20 @@
+{
+  "name": "game-server-demo",
+  "version": "1.0.0",
+  "description": "MMO-Lite 游戏服务器 Demo - Node.js 游戏后台教程",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "ts-node src/server.ts",
+    "dev": "ts-node --watch src/server.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13",
+    "@types/node": "^22.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.0"
+  }
+}
