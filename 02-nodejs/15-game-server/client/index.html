@@ -323,6 +323,7 @@
         e.preventDefault();
         if (ws && connected) {
           ws.send(JSON.stringify({ type: 'c_attack' }));
+          if (players[myId]) players[myId].attackFlash = 12;
         }
       }
     });
@@ -446,6 +447,18 @@
         ctx.strokeStyle = isMe ? '#fff' : '#aaa';
         ctx.lineWidth = 2;
         ctx.stroke();
+
+        // Attack flash ring
+        if (p.attackFlash && p.attackFlash > 0) {
+          p.attackFlash--;
+          const progress = 1 - p.attackFlash / 12;
+          const ringRadius = radius + 80 * progress;
+          ctx.beginPath();
+          ctx.arc(sx, sy, ringRadius, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(255, 220, 80, ${1 - progress})`;
+          ctx.lineWidth = 3;
+          ctx.stroke();
+        }
 
         // Name
         ctx.fillStyle = '#fff';
