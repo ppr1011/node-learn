@@ -103,7 +103,9 @@ export class GameWorld {
       const nearby = this.aoi.getNearbyPlayers(player);
       const newVisible = new Set<number>();
 
-      const states: any[] = [];
+      // 始终包含自身状态，确保客户端能收到自己的位置更新
+      const states: any[] = [player.toPublicState()];
+
       for (const other of nearby) {
         newVisible.add(other.id);
         states.push(other.toPublicState());
@@ -123,10 +125,7 @@ export class GameWorld {
 
       player.visiblePlayers = newVisible;
 
-      // 发送位置更新
-      if (states.length > 0) {
-        player.session.send(MsgType.STATE_UPDATE, { players: states });
-      }
+      player.session.send(MsgType.STATE_UPDATE, { players: states });
     }
   }
 
