@@ -1,5 +1,6 @@
 import { Player } from './Player';
 import { AOIManager } from './AOI';
+import { Obstacle, ObstacleGrid, generateObstacles } from './Obstacle';
 import { GameTimer } from '../utils/Timer';
 import { MovementSystem } from '../systems/MovementSystem';
 import { ChatSystem } from '../systems/ChatSystem';
@@ -11,6 +12,8 @@ import { MsgType } from '../network/Protocol';
 export class GameWorld {
   readonly players: Map<number, Player> = new Map();
   readonly aoi: AOIManager;
+  readonly obstacles: Obstacle[];
+  readonly obstacleGrid: ObstacleGrid;
   private timer: GameTimer;
   readonly movement: MovementSystem;
   readonly chat: ChatSystem;
@@ -23,6 +26,25 @@ export class GameWorld {
       GameConfig.MAP_HEIGHT
     );
 
+    this.obstacles = generateObstacles({
+      mapWidth: GameConfig.MAP_WIDTH,
+      mapHeight: GameConfig.MAP_HEIGHT,
+      seed: GameConfig.OBSTACLE_SEED,
+      gap: GameConfig.OBSTACLE_GAP,
+      tree: {
+        count: GameConfig.TREE_COUNT,
+        minSize: GameConfig.TREE_MIN_SIZE,
+        maxSize: GameConfig.TREE_MAX_SIZE,
+        trunkRatio: GameConfig.TREE_TRUNK_RATIO,
+      },
+      rock: {
+        count: GameConfig.ROCK_COUNT,
+        minRadius: GameConfig.ROCK_MIN_RADIUS,
+        maxRadius: GameConfig.ROCK_MAX_RADIUS,
+      },
+    });
+    this.obstacleGrid = new ObstacleGrid(this.obstacles, GameConfig.OBSTACLE_GRID_CELL_SIZE);
+
     this.movement = new MovementSystem(this);
     this.chat = new ChatSystem(this);
     this.combat = new CombatSystem(this);
@@ -32,7 +54,7 @@ export class GameWorld {
 
   start(): void {
     this.timer.start();
-    logger.info(`GameWorld started | tick rate: ${GameConfig.TICK_RATE}Hz | map: ${GameConfig.MAP_WIDTH}x${GameConfig.MAP_HEIGHT}`);
+    logger.info(`GameWorld started | tick rate: ${GameConfig.TICK_RATE}Hz | map: ${GameConfig.MAP_WIDTH}x${GameConfig.MAP_HEIGHT} | obstacles: ${this.obstacles.length}`);
   }
 
   stop(): void {
@@ -41,11 +63,8 @@ export class GameWorld {
   }
 
   addPlayer(player: Player): void {
-    // 随机生成出生点
-    player.position = {
-      x: Math.random() * GameConfig.MAP_WIDTH * 0.8 + GameConfig.MAP_WIDTH * 0.1,
-      y: Math.random() * GameConfig.MAP_HEIGHT * 0.8 + GameConfig.MAP_HEIGHT * 0.1,
-    };
+    // 随机生成出生点(避开障碍物)
+    player.position = this.findSafeSpawn(player.radius);
 
     this.players.set(player.id, player);
     this.aoi.addPlayer(player);
@@ -57,6 +76,7 @@ export class GameWorld {
       players: nearby.map(p => p.toPublicState()),
       mapWidth: GameConfig.MAP_WIDTH,
       mapHeight: GameConfig.MAP_HEIGHT,
+      obstacles: this.obstacles,
     });
 
     // 通知附近玩家有新人加入
@@ -127,6 +147,20 @@ export class GameWorld {
 
       player.session.send(MsgType.STATE_UPDATE, { players: states });
     }
+  }
+
+  /** 拒绝采样找一个不与任何障碍物重叠的出生点 */
+  private findSafeSpawn(radius: number): { x: number; y: number } {
+    for (let i = 0; i < 30; i++) {
+      const x = Math.random() * GameConfig.MAP_WIDTH * 0.8 + GameConfig.MAP_WIDTH * 0.1;
+      const y = Math.random() * GameConfig.MAP_HEIGHT * 0.8 + GameConfig.MAP_HEIGHT * 0.1;
+      const blocked = this.obstacleGrid.queryNearby(x, y, radius).some(o => {
+        return Math.hypot(x - o.x, y - o.y) < o.radius + radius;
+      });
+      if (!blocked) return { x, y };
+    }
+    // 兜底:极端情况下返回地图中心(即便重叠,下一 tick 会被推出)
+    return { x: GameConfig.MAP_WIDTH / 2, y: GameConfig.MAP_HEIGHT / 2 };
   }
 
   getStats() {

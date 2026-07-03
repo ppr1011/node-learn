@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>碰撞滑动可视化 · Collision Sliding Demo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 48px;
+    min-height: 100vh;
+  }
+  h1 { font-size: 20px; color: #4ecca3; margin-bottom: 4px; letter-spacing: 1px; }
+  .sub { font-size: 13px; color: #6e7681; margin-bottom: 18px; }
+  .stage-wrap {
+    position: relative;
+    border: 1px solid #21262d;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+  }
+  canvas { display: block; background: radial-gradient(circle at 50% 40%, #16281f, #0d1117); cursor: crosshair; }
+  .hint {
+    position: absolute; top: 12px; left: 14px;
+    font-size: 12px; color: #8b949e; pointer-events: none;
+    background: rgba(13,17,23,0.6); padding: 4px 8px; border-radius: 6px;
+  }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    margin-top: 18px; max-width: 760px; justify-content: center;
+  }
+  .seg {
+    display: inline-flex; border: 1px solid #30363d; border-radius: 8px; overflow: hidden;
+  }
+  .seg button {
+    background: #161b22; color: #8b949e; border: none; padding: 9px 16px;
+    font-size: 13px; cursor: pointer; transition: all .15s;
+  }
+  .seg button.active { background: #4ecca3; color: #0d1117; font-weight: 600; }
+  .seg button:not(.active):hover { background: #21262d; color: #c9d1d9; }
+  .ctrl { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #8b949e; }
+  .ctrl input[type=range] { width: 120px; accent-color: #4ecca3; }
+  .btn {
+    background: #161b22; color: #c9d1d9; border: 1px solid #30363d;
+    padding: 9px 14px; border-radius: 8px; font-size: 13px; cursor: pointer;
+  }
+  .btn:hover { border-color: #4ecca3; color: #4ecca3; }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 16px; margin-top: 20px;
+    font-size: 13px; max-width: 760px; justify-content: center;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 22px; height: 4px; border-radius: 2px; display: inline-block; }
+  .explain {
+    max-width: 760px; margin-top: 24px; font-size: 14px; line-height: 1.7;
+    background: #161b22; border: 1px solid #21262d; border-radius: 10px; padding: 18px 22px;
+  }
+  .explain h2 { font-size: 15px; color: #4ecca3; margin-bottom: 8px; }
+  .explain b { color: #e3b341; }
+  .explain .tan { color: #4ecca3; }
+  .explain .nor { color: #f85149; }
+  .explain .des { color: #58a6ff; }
+  code { background: #0d1117; padding: 1px 6px; border-radius: 4px; color: #79c0ff; font-size: 13px; }
+</style>
+</head>
+<body>
+  <h1>碰撞后:是「停下」还是「滑动」?</h1>
+  <div class="sub">移动鼠标,让青色小球撞向中间的障碍物 —— 观察它怎么反应</div>
+
+  <div class="stage-wrap">
+    <canvas id="cv" width="760" height="480"></canvas>
+    <div class="hint">🖱 移动鼠标控制小球 · 试着把鼠标放到障碍物「正后方」</div>
+  </div>
+
+  <div class="controls">
+    <div class="seg" id="modeSeg">
+      <button data-mode="slide" class="active">滑动 (push-out)</button>
+      <button data-mode="block">直接停下 (block)</button>
+    </div>
+    <div class="ctrl">速度
+      <input type="range" id="speed" min="60" max="600" value="240" />
+      <span id="speedVal">240</span>
+    </div>
+    <label class="ctrl"><input type="checkbox" id="showVec" checked /> 显示向量分解</label>
+    <label class="ctrl"><input type="checkbox" id="showTrail" checked /> 显示轨迹</label>
+    <button class="btn" id="reset">清除轨迹</button>
+  </div>
+
+  <div class="legend">
+    <span><i class="swatch" style="background:#58a6ff"></i>期望位移(你想去的方向)</span>
+    <span><i class="swatch" style="background:#f85149"></i>法向分量(被障碍物抵消)</span>
+    <span><i class="swatch" style="background:#4ecca3"></i>切向分量(保留 = 滑动)</span>
+    <span><i class="swatch" style="background:#8b949e;height:0;border-top:2px dashed #8b949e"></i>禁止进入圈(球心到不了里面)</span>
+  </div>
+
+  <div class="explain" id="explainBox"></div>
+
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+
+// ─── 障碍物(与游戏一致:圆形碰撞体)────────────────
+const obstacle = { x: W / 2, y: H / 2, radius: 70 };
+const PLAYER_RADIUS = 16;
+
+// 玩家状态
+const player = { x: 140, y: H / 2 };
+let target = { x: player.x, y: player.y }; // 鼠标目标点
+let mode = 'slide';
+let speed = 240;
+let showVec = true, showTrail = true;
+let trail = [];
+
+// 每帧向量记录(用于绘制分解)
+let dbg = null;
+
+// ─── 鼠标 ────────────────────────────────────────
+cv.addEventListener('mousemove', e => {
+  const r = cv.getBoundingClientRect();
+  target.x = e.clientX - r.left;
+  target.y = e.clientY - r.top;
+});
+
+// ─── 控件 ────────────────────────────────────────
+document.getElementById('modeSeg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  mode = b.dataset.mode;
+  [...document.querySelectorAll('#modeSeg button')].forEach(x => x.classList.toggle('active', x === b));
+  updateExplain();
+});
+document.getElementById('speed').addEventListener('input', e => {
+  speed = +e.target.value; document.getElementById('speedVal').textContent = speed;
+});
+document.getElementById('showVec').addEventListener('change', e => showVec = e.target.checked);
+document.getElementById('showTrail').addEventListener('change', e => { showTrail = e.target.checked; if (!showTrail) trail = []; });
+document.getElementById('reset').addEventListener('click', () => trail = []);
+
+// ─── 核心:碰撞解算(与服务端 MovementSystem 同思路)──
+function step(dt) {
+  // 1) 朝鼠标目标以固定速度移动,得到「期望位移」
+  const tdx = target.x - player.x, tdy = target.y - player.y;
+  const tlen = Math.hypot(tdx, tdy);
+  let mvx = 0, mvy = 0;
+  if (tlen > 0.5) {
+    const stepLen = Math.min(speed * dt, tlen);
+    mvx = (tdx / tlen) * stepLen;
+    mvy = (tdy / tlen) * stepLen;
+  }
+
+  const fromX = player.x, fromY = player.y;
+  let nx = player.x + mvx, ny = player.y + mvy; // 期望到达点(raw)
+
+  dbg = null;
+  const dx = nx - obstacle.x, dy = ny - obstacle.y;
+  const minDist = PLAYER_RADIUS + obstacle.radius;
+  const dist = Math.hypot(dx, dy);
+
+  if (dist < minDist) {
+    // —— 发生重叠 ——
+    if (mode === 'block') {
+      // 直接停下:整个移动作废,回到原位
+      nx = fromX; ny = fromY;
+    } else {
+      // 滑动:沿法线方向把球推回表面,只抵消「钻进去」的法向分量
+      if (dist === 0) { nx = obstacle.x + minDist; ny = obstacle.y; }
+      else {
+        const push = minDist - dist;
+        nx += (dx / dist) * push;
+        ny += (dy / dist) * push;
+      }
+    }
+    // 记录向量用于可视化:期望 vs 实际
+    dbg = {
+      fromX, fromY,
+      desX: fromX + mvx, desY: fromY + mvy, // 期望到达点
+      actX: nx, actY: ny,                   // 实际到达点
+    };
+  }
+
+  player.x = nx; player.y = ny;
+
+  if (showTrail) {
+    trail.push({ x: player.x, y: player.y });
+    if (trail.length > 900) trail.shift();
+  }
+}
+
+// ─── 绘制 ────────────────────────────────────────
+function arrow(x1, y1, x2, y2, color, width) {
+  width = width || 3;
+  const a = Math.atan2(y2 - y1, x2 - x1);
+  const len = Math.hypot(x2 - x1, y2 - y1);
+  if (len < 1) return;
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = width;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  const head = Math.min(11, len);
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - head * Math.cos(a - 0.4), y2 - head * Math.sin(a - 0.4));
+  ctx.lineTo(x2 - head * Math.cos(a + 0.4), y2 - head * Math.sin(a + 0.4));
+  ctx.closePath(); ctx.fill();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // 轨迹
+  if (showTrail && trail.length > 1) {
+    ctx.strokeStyle = 'rgba(78,204,163,0.35)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(trail[0].x, trail[0].y);
+    for (const p of trail) ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+  }
+
+  // 禁止进入圈(配置空间:球心到不了这个半径内)
+  ctx.strokeStyle = 'rgba(139,148,158,0.5)'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 6]);
+  ctx.beginPath(); ctx.arc(obstacle.x, obstacle.y, obstacle.radius + PLAYER_RADIUS, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // 障碍物
+  const g = ctx.createRadialGradient(obstacle.x - 20, obstacle.y - 20, 10, obstacle.x, obstacle.y, obstacle.radius);
+  g.addColorStop(0, '#3a4450'); g.addColorStop(1, '#20262e');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(obstacle.x, obstacle.y, obstacle.radius, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#6e7681'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('障碍物', obstacle.x, obstacle.y + 4);
+
+  // 目标点(鼠标)
+  ctx.fillStyle = 'rgba(88,166,255,0.5)';
+  ctx.beginPath(); ctx.arc(target.x, target.y, 4, 0, Math.PI * 2); ctx.fill();
+
+  // 向量分解
+  if (showVec && dbg) {
+    // 期望位移(蓝):from -> 期望到达点
+    arrow(dbg.fromX, dbg.fromY, dbg.desX, dbg.desY, '#58a6ff', 2.5);
+    // 法向分量(红):期望到达点 -> 实际到达点(被推回的部分)
+    arrow(dbg.desX, dbg.desY, dbg.actX, dbg.actY, '#f85149', 2.5);
+    // 切向分量(绿):from -> 实际到达点(真正走出去的 = 滑动)
+    arrow(dbg.fromX, dbg.fromY, dbg.actX, dbg.actY, '#4ecca3', 3.5);
+  }
+
+  // 玩家
+  ctx.fillStyle = '#4ecca3';
+  ctx.shadowColor = '#4ecca3'; ctx.shadowBlur = 16;
+  ctx.beginPath(); ctx.arc(player.x, player.y, PLAYER_RADIUS, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#0d1117'; ctx.font = 'bold 11px sans-serif';
+  ctx.fillText('球', player.x, player.y + 4);
+}
+
+// ─── 主循环 ──────────────────────────────────────
+let last = performance.now();
+function loop(now) {
+  let dt = (now - last) / 1000; last = now;
+  dt = Math.min(dt, 0.05); // 防止卡顿时位移过大
+  step(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ─── 文字说明 ────────────────────────────────────
+function updateExplain() {
+  const box = document.getElementById('explainBox');
+  if (mode === 'slide') {
+    box.innerHTML =
+      '<h2>当前:滑动 (push-out) —— 这就是你项目里的实现 ✅</h2>' +
+      '<p>每一帧,球先按你想去的方向走一整步,得到<span class="des">期望位移(蓝色)</span>。' +
+      '如果这一步钻进了障碍物,就沿着「障碍圆心 → 球」这条法线,把球<span class="nor">推回表面(红色)</span>。</p>' +
+      '<p>红色只抵消了「垂直撞向障碍物」的那部分,而「平行于障碍表面」的那部分被完整保留 —— ' +
+      '于是球真正走出的是<span class="tan">绿色的切向分量</span>,看起来就是<b>顺着障碍物边缘滑过去</b>。</p>' +
+      '<p>👉 试试把鼠标放到障碍物<b>正后方</b>:球不会卡死,而是滑着绕过去。三条箭头永远组成一个三角形:' +
+      '<span class="des">蓝</span> + <span class="nor">红</span> = <span class="tan">绿</span>。</p>';
+  } else {
+    box.innerHTML =
+      '<h2>当前:直接停下 (block) —— 对比用的「反面教材」</h2>' +
+      '<p>这种写法一旦检测到碰撞,就把<b>整步移动全部作废</b>,球留在原地(<span class="nor">红色 = 撤销了整个期望位移</span>)。</p>' +
+      '<p>👉 试试把鼠标放到障碍物<b>正后方</b>:球会直接<b>卡死</b>在障碍物正面,必须你手动把鼠标绕开它才能继续 —— 手感很差。</p>' +
+      '<p>切回「滑动」模式,对比一下差别就明白了。</p>';
+  }
+}
+updateExplain();
+</script>
+</body>
+</html>
