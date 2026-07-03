@@ -1,11 +1,13 @@
 import { Entity } from './Entity';
 import { Session } from '../network/Session';
+import { GameConfig } from '../config';
 
 export class Player extends Entity {
   readonly name: string;
   session: Session;
   hp: number = 100;
   maxHp: number = 100;
+  radius: number = GameConfig.PLAYER_RADIUS; // 碰撞半径
   speed: number = 200; // pixels per second
   attackRange: number = 80;
   attackDamage: number = 10;

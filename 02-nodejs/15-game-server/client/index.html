@@ -223,6 +223,7 @@
     let damageNumbers = [];
     let screenShake = 0;
     let mapObjects = [];
+    let obstacles = [];   // 服务端权威下发的碰撞障碍物
     let lastTime = 0;
 
     // ─── DOM ─────────────────────────────────────────────────
@@ -256,28 +257,10 @@
     }
 
     // ─── Procedural map generation ───────────────────────────
+    // 注意:树、石等「实心」物体已改由服务端权威生成并下发(见 obstacles),
+    // 客户端这里只生成不参与碰撞的纯装饰物:灌木、花。
     function generateMap() {
       mapObjects = [];
-      // Trees
-      for (let i = 0; i < 120; i++) {
-        mapObjects.push({
-          type: 'tree',
-          x: srand(i * 7 + 1) * mapWidth,
-          y: srand(i * 7 + 2) * mapHeight,
-          size: 18 + srand(i * 7 + 3) * 14,
-          variant: Math.floor(srand(i * 7 + 4) * 3),
-        });
-      }
-      // Rocks
-      for (let i = 0; i < 60; i++) {
-        mapObjects.push({
-          type: 'rock',
-          x: srand(i * 13 + 200) * mapWidth,
-          y: srand(i * 13 + 201) * mapHeight,
-          size: 10 + srand(i * 13 + 202) * 14,
-          rot: srand(i * 13 + 203) * Math.PI * 2,
-        });
-      }
       // Bushes
       for (let i = 0; i < 80; i++) {
         mapObjects.push({
@@ -340,6 +323,7 @@
           mapHeight = msg.data.mapHeight;
           players[myId] = msg.data.self;
           for (const p of msg.data.players) players[p.id] = p;
+          obstacles = msg.data.obstacles || [];
           addSysMsg(`进入了游戏世界 (${mapWidth}x${mapHeight})`);
           generateMap();
           break;
@@ -600,44 +584,6 @@
       ctx.restore();
     }
 
-    function drawRock(o) {
-      const sx = o.x - camera.x, sy = o.y - camera.y;
-      const s = o.size;
-      ctx.save();
-      ctx.translate(sx, sy);
-      ctx.rotate(o.rot);
-      // Shadow
-      ctx.globalAlpha = 0.2;
-      ctx.fillStyle = '#000';
-      ctx.beginPath();
-      ctx.ellipse(s * 0.2, s * 0.5, s * 0.9, s * 0.28, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      // Body
-      ctx.fillStyle = '#555566';
-      ctx.beginPath();
-      ctx.moveTo(-s, s * 0.3);
-      ctx.lineTo(-s * 0.6, -s * 0.55);
-      ctx.lineTo(0, -s * 0.82);
-      ctx.lineTo(s * 0.7, -s * 0.42);
-      ctx.lineTo(s, s * 0.22);
-      ctx.lineTo(s * 0.5, s * 0.72);
-      ctx.lineTo(-s * 0.4, s * 0.62);
-      ctx.closePath();
-      ctx.fill();
-      // Face highlight
-      ctx.fillStyle = '#7a7a8e';
-      ctx.beginPath();
-      ctx.moveTo(-s * 0.45, -s * 0.3);
-      ctx.lineTo(0, -s * 0.62);
-      ctx.lineTo(s * 0.38, -s * 0.18);
-      ctx.lineTo(s * 0.08, s * 0.12);
-      ctx.lineTo(-s * 0.28, 0);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-    }
-
     function drawBush(o) {
       const sx = o.x - camera.x, sy = o.y - camera.y;
       const s = o.size;
@@ -656,6 +602,34 @@
       ctx.globalAlpha = 0.7;
       ctx.fillStyle = o.color;
       ctx.beginPath(); ctx.arc(sx, sy, 2.5, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+
+    // 服务端障碍物:按真实碰撞半径绘制的苔石巨砾(玩家会被它挡住/滑过)
+    function drawObstacle(o) {
+      const sx = o.x - camera.x, sy = o.y - camera.y;
+      const r = o.radius;
+      ctx.save();
+      // 地面阴影
+      ctx.globalAlpha = 0.28;
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.ellipse(sx + r * 0.12, sy + r * 0.42, r * 1.02, r * 0.42, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      // 石体(径向渐变模拟受光)
+      const g = ctx.createRadialGradient(sx - r * 0.35, sy - r * 0.35, r * 0.2, sx, sy, r);
+      g.addColorStop(0, '#6b6f7d');
+      g.addColorStop(1, '#3a3d47');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
+      // 顶部苔藓
+      ctx.fillStyle = 'rgba(78,204,163,0.35)';
+      ctx.beginPath(); ctx.arc(sx - r * 0.2, sy - r * 0.35, r * 0.5, 0, Math.PI * 2); ctx.fill();
+      // 边缘描边(勾出碰撞轮廓)
+      ctx.strokeStyle = 'rgba(20,22,28,0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
     }
 
@@ -801,11 +775,17 @@
 
       const sx = mw / mapWidth, sy = mh / mapHeight;
 
-      // Trees
-      mmCtx.fillStyle = '#1a4a1a';
-      for (const o of mapObjects) {
-        if (o.type !== 'tree') continue;
-        mmCtx.fillRect(o.x * sx - 1, o.y * sy - 1, 2, 2);
+      // 障碍物:树=绿点,石=灰点(按视觉尺寸缩放)
+      for (const o of obstacles) {
+        if (o.type === 'tree') {
+          mmCtx.fillStyle = '#1a4a1a';
+          mmCtx.fillRect(o.x * sx - 1, o.y * sy - 1, 2.5, 2.5);
+        } else {
+          mmCtx.fillStyle = '#8b8f9c';
+          mmCtx.beginPath();
+          mmCtx.arc(o.x * sx, o.y * sy, Math.max(1.5, o.radius * sx), 0, Math.PI * 2);
+          mmCtx.fill();
+        }
       }
 
       // Viewport rect
@@ -886,21 +866,30 @@
       const visObj = mapObjects.filter(o => isVisible(o.x, o.y, 120));
       visObj.sort((a, b) => a.y - b.y);
 
-      // Flowers + bushes + rocks first (ground layer)
+      // 装饰物(客户端本地、无碰撞):花、灌木 —— 地面层
       for (const o of visObj) {
         if (o.type === 'flower') drawFlower(o);
-        else if (o.type === 'bush')   drawBush(o);
-        else if (o.type === 'rock')   drawRock(o);
+        else if (o.type === 'bush') drawBush(o);
       }
+
+      // 服务端障碍物拆成两层:石在玩家下,树冠在玩家上(可走到树荫下被遮挡)
+      const rocks = [], trees = [];
+      for (const o of obstacles) {
+        if (o.type === 'tree') { if (isVisible(o.x, o.y, o.size + 80)) trees.push(o); }
+        else if (isVisible(o.x, o.y, o.radius + 40)) rocks.push(o);
+      }
+      rocks.sort((a, b) => a.y - b.y);
+      trees.sort((a, b) => a.y - b.y);
+
+      // 石(碰撞体,玩家之下)
+      for (const o of rocks) drawObstacle(o);
 
       // ── Players (sorted by Y) ───────────────────────────────
       const sortedP = Object.entries(players).sort(([,a],[,b]) => (a.y||0) - (b.y||0));
       for (const [id, p] of sortedP) drawPlayer(p, id);
 
-      // Trees on top of players (canopy layer)
-      for (const o of visObj) {
-        if (o.type === 'tree') drawTree(o);
-      }
+      // 树(树干挡人,树冠盖在玩家头顶)
+      for (const o of trees) drawTree(o);
 
       // ── Particles ───────────────────────────────────────────
       updateFX();
