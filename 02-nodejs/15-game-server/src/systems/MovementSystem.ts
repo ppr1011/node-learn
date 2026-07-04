@@ -22,6 +22,9 @@ export class MovementSystem {
       x: (dx / len) * player.speed,
       y: (dy / len) * player.speed,
     };
+
+    // 记录朝向:无攻击目标时,攻击动画沿最后移动方向挥出
+    player.facing = Math.atan2(dy, dx);
   }
 
   update(player: Player, dt: number): void {

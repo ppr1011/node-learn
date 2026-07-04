@@ -15,10 +15,16 @@ import { EnemyAISystem } from '../systems/EnemyAISystem';
 import { GameConfig } from '../config';
 import { logger } from '../utils/Logger';
 import { MsgType } from '../network/Protocol';
+import { WeaponDrop } from './WeaponDrop';
+import { rollWeaponDrop } from './Weapon';
+
+/** 击杀不同敌人的掉落幸运系数(越高越易出稀有/史诗) */
+const DROP_LUCK: Record<string, number> = { slime: 0.8, skeleton: 1.1, demon: 1.7 };
 
 export class GameWorld {
   readonly players: Map<number, Player> = new Map();
   readonly enemies: Map<number, Enemy> = new Map();
+  readonly drops: Map<number, WeaponDrop> = new Map();
   readonly aoi: AOIManager;
   readonly spawner: Spawner;
   readonly obstacles: Obstacle[];
@@ -157,6 +163,7 @@ export class GameWorld {
       mapHeight: GameConfig.MAP_HEIGHT,
       obstacles: this.obstacles,
       enemies: [...this.enemies.values()].map(e => e.toPublicState()),
+      drops: [...this.drops.values()].map(d => d.toPublicState()),
       weather: this.weather,
     });
 
@@ -198,8 +205,55 @@ export class GameWorld {
     // 更新敌人 AI
     this.enemyAI.update(dt);
 
+    // 掉落物:拾取判定 + TTL 清理
+    this.updateDrops(Date.now());
+
     // 广播状态更新给各自视野内的玩家
     this.broadcastStates();
+  }
+
+  /** 向所有在线玩家广播(掉落物数量少 + 有 TTL 上限,与天气一样走全局广播,简单可靠) */
+  private broadcastAll(type: MsgType, data: unknown): void {
+    for (const player of this.players.values()) player.session.send(type, data);
+  }
+
+  /** 击杀敌人后按几率掉落一件武器(强敌 luck 更高) */
+  spawnWeaponDrop(enemy: Enemy): void {
+    if (Math.random() >= GameConfig.WEAPON_DROP_CHANCE) return;
+    const luck = DROP_LUCK[enemy.kind] ?? 1;
+    const kind = rollWeaponDrop(luck);
+    const drop = new WeaponDrop(kind, enemy.position.x, enemy.position.y, GameConfig.WEAPON_DROP_TTL);
+    this.drops.set(drop.id, drop);
+    this.broadcastAll(MsgType.ITEM_SPAWN, drop.toPublicState());
+  }
+
+  /** 每 tick:玩家走到掉落物上自动拾取装备;过期掉落自然消失 */
+  private updateDrops(now: number): void {
+    const R = GameConfig.WEAPON_PICKUP_RADIUS;
+    for (const drop of this.drops.values()) {
+      // TTL 到期 → 消失(byPlayerId=null 表示自然消失,非被拾取)
+      if (now >= drop.expiresAt) {
+        this.drops.delete(drop.id);
+        this.broadcastAll(MsgType.ITEM_PICKUP, { dropId: drop.id, byPlayerId: null });
+        continue;
+      }
+      // 拾取判定:命中最近的一名存活玩家即被其装备
+      for (const player of this.players.values()) {
+        if (player.isDead) continue;
+        const dx = player.position.x - drop.position.x;
+        const dy = player.position.y - drop.position.y;
+        if (Math.hypot(dx, dy) <= R) {
+          player.equip(drop.kind);
+          this.drops.delete(drop.id);
+          this.broadcastAll(MsgType.ITEM_PICKUP, {
+            dropId: drop.id,
+            byPlayerId: player.id,
+            weapon: drop.kind,
+          });
+          break;
+        }
+      }
+    }
   }
 
   private broadcastStates(): void {

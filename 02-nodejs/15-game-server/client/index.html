@@ -187,6 +187,7 @@
       <div id="controls">
         WASD · 移动 &nbsp; SPACE · 攻击<br>
         ENTER · 聊天 &nbsp; ESC · 关闭输入<br>
+        <span style="color:#4ecca3">击杀敌人掉落武器 · 走过即拾取装备</span><br>
         <span style="color:#365">T · 切天气 &nbsp; [ ] · 强度 &nbsp; Y · 复原</span>
       </div>
       <div id="chat-input-container">
@@ -226,6 +227,11 @@
     let mapObjects = [];
     let obstacles = [];   // 服务端权威下发的碰撞障碍物
     let enemies = {};     // id → enemy state (from server)
+    let drops = {};       // id → 地面武器掉落物 { id, kind, rarity, x, y }
+    let projectiles = []; // 飞行物(法球等),世界坐标
+    let shockwaves = [];  // 重击落地震波环,世界坐标
+    let lastAttackAt = 0; // 本地最近一次成功发起攻击的时间(仅用于冷却环 HUD 估算)
+    let frame = 0;        // 渲染帧计数(掉落物浮动/光环脉动用)
     let weather = { kind: 'clear', intensity: 0 }; // 服务端权威下发的全局天气(仅 kind + intensity)
     let lastTime = 0;
     // 天气视觉细节全部在客户端程序化生成(见文件末尾「Weather」章节),
@@ -333,6 +339,8 @@
             enemies = {};
             for (const e of msg.data.enemies) enemies[e.id] = e;
           }
+          drops = {};
+          if (msg.data.drops) for (const d of msg.data.drops) drops[d.id] = d;
           if (msg.data.weather) { weather = msg.data.weather; addSysMsg(`当前天气: ${weatherLabel(weather.kind)}`); }
           addSysMsg(`进入了游戏世界 (${mapWidth}x${mapHeight})`);
           generateMap();
@@ -352,7 +360,7 @@
         case 's_state':
           for (const p of msg.data.players) {
             if (players[p.id]) {
-              Object.assign(players[p.id], { targetX: p.x, targetY: p.y, hp: p.hp, isDead: p.isDead });
+              Object.assign(players[p.id], { targetX: p.x, targetY: p.y, hp: p.hp, isDead: p.isDead, weapon: p.weapon, facing: p.facing });
             } else {
               players[p.id] = p;
             }
@@ -438,6 +446,32 @@
           addSysMsg(`天气变化: ${weatherLabel(weather.kind)}`);
           break;
 
+        case 's_attack':
+          triggerAttackAnim(msg.data);
+          break;
+
+        case 's_item_spawn': {
+          const d = msg.data;
+          drops[d.id] = d;
+          if (d.rarity !== 'common') {
+            spawnRing(d.x, d.y, RARITY_COLOR[d.rarity], 14);
+            addSysMsg(`✧ 掉落了 ${RARITY_LABEL[d.rarity]}武器!`);
+          }
+          break;
+        }
+
+        case 's_item_pickup': {
+          const d = drops[msg.data.dropId];
+          if (msg.data.byPlayerId) {
+            const w = WEAPONS[msg.data.weapon];
+            if (d) { spawnRing(d.x, d.y, w ? RARITY_COLOR[w.rarity] : '#fff', 16); spawnDmgNumText(d.x, d.y, w ? w.label : '?', '#ffe066'); }
+            if (players[msg.data.byPlayerId]) players[msg.data.byPlayerId].weapon = msg.data.weapon;
+            if (msg.data.byPlayerId === myId && w) addSysMsg(`⚔ 拾取并装备了 ${w.label}（${RARITY_LABEL[w.rarity]}）`);
+          }
+          delete drops[msg.data.dropId];
+          break;
+        }
+
         case 's_pong':
           latency = Date.now() - (msg.data?.time || pingTime);
           break;
@@ -506,7 +540,7 @@
         e.preventDefault();
         if (ws && connected && myId) {
           ws.send(JSON.stringify({ type: 'c_attack' }));
-          if (players[myId]) players[myId].attackFlash = 12;
+          lastAttackAt = Date.now(); // 冷却环 HUD 估算(权威冷却仍在服务端);挥击动画由 s_attack 回声驱动
         }
       }
     });
@@ -617,6 +651,8 @@
         d.life -= d.decay;
         if (d.life <= 0) damageNumbers.splice(i, 1);
       }
+      updateProjectiles();
+      updateShockwaves();
     }
 
     // ─── Color helpers ────────────────────────────────────────
@@ -926,6 +962,241 @@
       ctx.fillRect(bX, bY, bW * ratio, bH);
     }
 
+    // ═══ Weapons & Drops ═════════════════════════════════════════
+    // 武器数值/稀有度是服务端权威(见 src/core/Weapon.ts);客户端只留一份只读副本
+    // 用于 HUD 显示与动画时长参数。贴图走 assets/weapons/*.png(Kenney CC0),
+    // 缺文件时回退程序化图标(与敌人/天气同一「范式 A/B」思路)。
+    const RARITY_COLOR = { common: '#b5c6d6', rare: '#4ea3ff', epic: '#b06bff' };
+    const RARITY_LABEL = { common: '普通', rare: '稀有', epic: '史诗' };
+    const WEAPONS = {
+      fist:       { label: '徒手', rarity: 'common', cooldown: 1000, dur: 12, range: 80  },
+      dagger:     { label: '匕首', rarity: 'common', cooldown: 450,  dur: 14, range: 70  },
+      sword:      { label: '铁剑', rarity: 'common', cooldown: 800,  dur: 18, range: 105 },
+      greatsword: { label: '巨剑', rarity: 'rare',   cooldown: 1250, dur: 26, range: 120 },
+      axe:        { label: '战斧', rarity: 'rare',   cooldown: 1400, dur: 24, range: 95  },
+      hammer:     { label: '战锤', rarity: 'epic',   cooldown: 1700, dur: 30, range: 100 },
+      staff:      { label: '法杖', rarity: 'epic',   cooldown: 1150, dur: 22, range: 240 },
+    };
+
+    // ── 武器贴图(Kenney Tiny Dungeon · CC0)+ 程序化兜底 ──────────────
+    const WEAPON_SPRITE_PATHS = {
+      dagger: 'assets/weapons/dagger.png', sword: 'assets/weapons/sword.png',
+      greatsword: 'assets/weapons/greatsword.png', axe: 'assets/weapons/axe.png',
+      hammer: 'assets/weapons/hammer.png', staff: 'assets/weapons/staff.png',
+    };
+    const _weaponSprites = {};
+    function loadWeaponSprite(kind) {
+      if (kind in _weaponSprites) return _weaponSprites[kind];
+      const path = WEAPON_SPRITE_PATHS[kind];
+      if (!path) { _weaponSprites[kind] = null; return null; }
+      const img = new Image();
+      img.onerror = () => { _weaponSprites[kind] = null; };
+      img.src = path;
+      _weaponSprites[kind] = img;
+      return img;
+    }
+    const _procWeapons = {};
+    function getProcWeapon(kind) {
+      if (_procWeapons[kind]) return _procWeapons[kind];
+      const oc = document.createElement('canvas'); oc.width = 16; oc.height = 16;
+      const c = oc.getContext('2d');
+      if (kind === 'dagger' || kind === 'sword' || kind === 'greatsword') {
+        const len = kind === 'dagger' ? 7 : kind === 'sword' ? 10 : 12;
+        c.strokeStyle = '#cdd6e6'; c.lineWidth = kind === 'greatsword' ? 3 : 2;
+        c.beginPath(); c.moveTo(8, 15); c.lineTo(8, 15 - len); c.stroke();
+        c.strokeStyle = '#8a6a3a'; c.lineWidth = 2;
+        c.beginPath(); c.moveTo(5, 13); c.lineTo(11, 13); c.stroke();
+      } else if (kind === 'axe') {
+        c.fillStyle = '#8a6a3a'; c.fillRect(7, 3, 2, 12);
+        c.fillStyle = '#b8c0cc'; c.beginPath(); c.moveTo(9, 3); c.lineTo(14, 6); c.lineTo(9, 9); c.fill();
+      } else if (kind === 'hammer') {
+        c.fillStyle = '#8a6a3a'; c.fillRect(7, 5, 2, 10);
+        c.fillStyle = '#9aa4b2'; c.fillRect(4, 3, 8, 4);
+      } else if (kind === 'staff') {
+        c.fillStyle = '#8a6a3a'; c.fillRect(7, 5, 2, 10);
+        c.fillStyle = '#b06bff'; c.beginPath(); c.arc(8, 4, 3, 0, Math.PI * 2); c.fill();
+      }
+      _procWeapons[kind] = oc; return oc;
+    }
+    function drawWeaponIcon(cx, cy, kind, size) {
+      const spr = loadWeaponSprite(kind);
+      ctx.save(); ctx.imageSmoothingEnabled = false;
+      if (spriteOK(spr)) ctx.drawImage(spr, cx - size / 2, cy - size / 2, size, size);
+      else ctx.drawImage(getProcWeapon(kind), cx - size / 2, cy - size / 2, size, size);
+      ctx.restore();
+    }
+
+    // ── 收到 s_attack:给攻击者挂一段挥击动画状态(所有客户端同步播放) ──────
+    function triggerAttackAnim(data) {
+      const p = players[data.attackerId];
+      if (!p) return;
+      const w = WEAPONS[data.weapon] || WEAPONS.fist;
+      p.attackAnim = { weapon: data.weapon, dir: data.dir || 0, t: 0, dur: w.dur,
+                       reach: Math.max(40, data.range || w.range || 80), impacted: false, fired: false };
+      p.facing = data.dir ?? p.facing ?? 0;
+    }
+
+    // ── 武器攻击动画:按武器类型分支,进度 t(0→1,帧驱动) ───────────────────
+    function drawSlashArc(sx, sy, r, lead, span, rgbaPrefix, width, t) {
+      ctx.save(); ctx.lineCap = 'round';
+      for (let i = 0; i < 5; i++) {                 // 残影月牙:多段渐隐模拟挥砍拖尾
+        const a0 = lead - span * (i / 5);
+        const alpha = (1 - i / 5) * (1 - t * 0.3) * 0.8;
+        ctx.strokeStyle = `${rgbaPrefix}${alpha})`;
+        ctx.lineWidth = width * (1 - i / 6);
+        ctx.beginPath(); ctx.arc(sx, sy, r, a0 - 0.12, a0); ctx.stroke();
+      }
+      const tx = sx + Math.cos(lead) * r, ty = sy + Math.sin(lead) * r;
+      ctx.fillStyle = `${rgbaPrefix}0.95)`;
+      ctx.beginPath(); ctx.arc(tx, ty, width * 0.6, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    function drawWeaponAttack(p, sx, sy) {
+      const a = p.attackAnim; if (!a) return;
+      a.t += 1 / a.dur;
+      const t = Math.min(1, a.t), dir = a.dir, reach = a.reach;
+      const pt = (ang, r) => [sx + Math.cos(ang) * r, sy + Math.sin(ang) * r];
+      ctx.save(); ctx.lineCap = 'round';
+
+      if (a.weapon === 'fist') {                    // 徒手:扩散光环(旧行为)
+        const rr = 8 + t * (reach * 0.9);
+        ctx.strokeStyle = `rgba(255,220,80,${(1 - t) * 0.85})`; ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(sx, sy, rr, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = `rgba(255,180,40,${(1 - t) * 0.4})`; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(sx, sy, rr * 0.55, 0, Math.PI * 2); ctx.stroke();
+      } else if (a.weapon === 'dagger') {           // 匕首:两段快速短刺
+        const pulse = Math.abs(Math.sin(t * Math.PI * 2));
+        const [x0, y0] = pt(dir, 10), [x1, y1] = pt(dir, reach * (0.5 + 0.5 * pulse));
+        ctx.strokeStyle = 'rgba(220,240,255,0.9)'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.beginPath(); ctx.arc(x1, y1, 2.4, 0, Math.PI * 2); ctx.fill();
+      } else if (a.weapon === 'sword') {            // 铁剑:横向大挥砍弧
+        const SW = 1.15, cur = dir - SW + t * 2 * SW;
+        drawSlashArc(sx, sy, reach, cur, 0.7, 'rgba(255,255,255,', 4, t);
+      } else if (a.weapon === 'greatsword') {       // 巨剑:360° 旋风斩(偏蓝更厚)
+        const cur = dir + t * Math.PI * 2;
+        drawSlashArc(sx, sy, reach, cur, 1.1, 'rgba(150,200,255,', 6, t);
+      } else if (a.weapon === 'axe' || a.weapon === 'hammer') { // 斧/锤:过顶下劈 + 落地震波
+        const heavy = a.weapon === 'hammer';
+        const e = t * t * (3 - 2 * t);              // smoothstep 缓出
+        const cur = dir - Math.PI * 0.95 + e * (Math.PI * 0.95);
+        const [hx, hy] = pt(cur, reach * 0.95);
+        ctx.strokeStyle = heavy ? 'rgba(200,210,225,0.95)' : 'rgba(210,220,235,0.9)';
+        ctx.lineWidth = heavy ? 7 : 5;
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(hx, hy); ctx.stroke();
+        ctx.fillStyle = heavy ? '#aab2c0' : '#b8c0cc';
+        ctx.beginPath(); ctx.arc(hx, hy, heavy ? 7 : 5, 0, Math.PI * 2); ctx.fill();
+        if (!a.impacted && t >= 0.6) {              // 命中落地(一次):震波 + 屏震 + 尘土
+          a.impacted = true;
+          const wx = p.x + Math.cos(dir) * reach * 0.85, wy = p.y + Math.sin(dir) * reach * 0.85;
+          shockwaves.push({ x: wx, y: wy, r: heavy ? 6 : 4, max: heavy ? 70 : 48, life: 1,
+                            color: heavy ? '#ffd27a' : '#dfe6f0', width: heavy ? 4 : 3 });
+          screenShake = Math.max(screenShake, heavy ? 13 : 7);
+          spawnParticles(wx, wy, heavy ? 14 : 8, { spdMin: 1.5, spdMax: heavy ? 5 : 3.5,
+            szMin: 2, szMax: heavy ? 5 : 4, color: ['#b8a07a', '#8a6a3a', '#d8c8a0'], decay: 0.05, gravity: 0.15 });
+        }
+      } else if (a.weapon === 'staff') {            // 法杖:蓄力辉光 → 释放飞行法球
+        const [gx, gy] = pt(dir, 16);
+        const glow = t < 0.35 ? t / 0.35 : Math.max(0, 1 - (t - 0.35) / 0.3);
+        if (glow > 0) {
+          const g = ctx.createRadialGradient(gx, gy, 0, gx, gy, 10 * glow + 3);
+          g.addColorStop(0, 'rgba(210,170,255,0.9)'); g.addColorStop(1, 'rgba(176,107,255,0)');
+          ctx.fillStyle = g; ctx.beginPath(); ctx.arc(gx, gy, 10 * glow + 3, 0, Math.PI * 2); ctx.fill();
+        }
+        if (!a.fired && t >= 0.35) { a.fired = true; spawnProjectile(p.x, p.y, dir, 'orb'); }
+      }
+      ctx.restore();
+      if (a.t >= 1) p.attackAnim = null;
+    }
+    // 未攻击时,在身侧展示当前持握的武器
+    function drawHeldWeapon(p, sx, sy, R) {
+      const f = p.facing || 0;
+      drawWeaponIcon(sx + Math.cos(f) * (R + 3), sy + Math.sin(f) * (R + 1), p.weapon, 15);
+    }
+
+    // ── 地面掉落物 ────────────────────────────────────────────────────
+    function drawDrops() {
+      for (const id in drops) {
+        const d = drops[id];
+        if (!isVisible(d.x, d.y, 40)) continue;
+        const sx = Math.round(d.x - camera.x), sy = Math.round(d.y - camera.y);
+        const col = RARITY_COLOR[d.rarity] || '#b5c6d6';
+        const bob = Math.sin(frame * 0.08 + d.id) * 3;
+        const pulse = 0.5 + 0.5 * Math.sin(frame * 0.1 + d.id);
+        ctx.save(); ctx.globalAlpha = 0.28; ctx.fillStyle = '#000';
+        ctx.beginPath(); ctx.ellipse(sx, sy + 8, 10, 4, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+        const gr = ctx.createRadialGradient(sx, sy - bob, 2, sx, sy - bob, 20);
+        gr.addColorStop(0, col + (d.rarity === 'common' ? '44' : '66'));
+        gr.addColorStop(1, 'transparent');
+        ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(sx, sy - bob, 20, 0, Math.PI * 2); ctx.fill();
+        drawWeaponIcon(sx, sy - bob - 2, d.kind, 26);
+        ctx.save(); ctx.strokeStyle = col; ctx.globalAlpha = 0.35 + 0.45 * pulse; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(sx, sy - bob - 2, 14, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+        if (d.rarity === 'epic' && Math.random() < 0.25)
+          spawnParticles(d.x, d.y - 6, 1, { spdMin: 0.3, spdMax: 1.2, szMin: 1, szMax: 2, color: [col, '#ffffff'], decay: 0.05, gravity: -0.02 });
+      }
+    }
+
+    // ── 飞行物(法球/箭)+ 重击震波环 ────────────────────────────────────
+    function spawnProjectile(x, y, dir, kind) {
+      const spd = kind === 'arrow' ? 15 : 10;
+      projectiles.push({ x, y, vx: Math.cos(dir) * spd, vy: Math.sin(dir) * spd, dir, kind,
+                         dist: 0, max: kind === 'orb' ? 250 : 320, color: kind === 'orb' ? '#b06bff' : '#ffd27a' });
+    }
+    function updateProjectiles() {
+      for (let i = projectiles.length - 1; i >= 0; i--) {
+        const p = projectiles[i];
+        p.x += p.vx; p.y += p.vy; p.dist += Math.hypot(p.vx, p.vy);
+        if (p.dist >= p.max) {
+          if (p.kind === 'orb') {
+            spawnRing(p.x, p.y, p.color, 12);
+            spawnParticles(p.x, p.y, 10, { spdMin: 1, spdMax: 3.5, szMin: 2, szMax: 4, color: [p.color, '#e0c8ff', '#fff'], decay: 0.05 });
+          } else spawnParticles(p.x, p.y, 6, { spdMin: 1, spdMax: 3, szMin: 1, szMax: 3, color: [p.color, '#fff'], decay: 0.06 });
+          projectiles.splice(i, 1);
+        }
+      }
+    }
+    function drawProjectiles() {
+      for (const p of projectiles) {
+        if (!isVisible(p.x, p.y, 30)) continue;
+        const sx = p.x - camera.x, sy = p.y - camera.y;
+        if (p.kind === 'orb') {
+          const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, 9);
+          g.addColorStop(0, '#fff'); g.addColorStop(0.4, p.color); g.addColorStop(1, 'transparent');
+          ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, 9, 0, Math.PI * 2); ctx.fill();
+        } else {
+          ctx.save(); ctx.translate(sx, sy); ctx.rotate(p.dir);
+          ctx.strokeStyle = p.color; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(-8, 0); ctx.lineTo(6, 0); ctx.stroke();
+          ctx.fillStyle = p.color; ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(2, -2); ctx.lineTo(2, 2); ctx.fill();
+          ctx.restore();
+        }
+      }
+    }
+    function updateShockwaves() {
+      for (let i = shockwaves.length - 1; i >= 0; i--) {
+        const s = shockwaves[i];
+        s.r += (s.max - s.r) * 0.18; s.life -= 0.045;
+        if (s.life <= 0) shockwaves.splice(i, 1);
+      }
+    }
+    function drawShockwaves() {
+      for (const s of shockwaves) {
+        if (!isVisible(s.x, s.y, s.max + 20)) continue;
+        const sx = s.x - camera.x, sy = s.y - camera.y;
+        ctx.save(); ctx.globalAlpha = Math.max(0, s.life) * 0.8;
+        ctx.strokeStyle = s.color; ctx.lineWidth = s.width;
+        ctx.beginPath(); ctx.ellipse(sx, sy, s.r, s.r * 0.5, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // 浮动文本(拾取提示等,复用 damageNumbers 池)
+    function spawnDmgNumText(x, y, text, color) {
+      damageNumbers.push({ x, y, vy: -1.6, life: 1, decay: 0.02, text, color, big: false });
+    }
+
     // ─── Draw player ──────────────────────────────────────────
     function drawPlayer(p, id) {
       // Smooth interpolate
@@ -999,22 +1270,24 @@
       ctx.beginPath(); ctx.arc(sx, sy, R * 0.6, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
 
-      // Attack flash ring
-      if (p.attackFlash && p.attackFlash > 0) {
-        p.attackFlash--;
-        const prog = 1 - p.attackFlash / 12;
-        ctx.beginPath();
-        ctx.arc(sx, sy, R + ATTACK_RANGE * prog, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(255,220,80,${(1 - prog) * 0.85})`;
-        ctx.lineWidth = 2.5;
-        ctx.stroke();
-        // Second inner ring
-        ctx.beginPath();
-        ctx.arc(sx, sy, R + ATTACK_RANGE * prog * 0.5, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(255,180,40,${(1 - prog) * 0.4})`;
-        ctx.lineWidth = 1;
-        ctx.stroke();
+      // 攻击冷却环(仅自己):估算当前武器冷却进度,画在脚下
+      if (isMe && p.weapon) {
+        const cd = (WEAPONS[p.weapon] || WEAPONS.fist).cooldown;
+        const prog = Math.min(1, (Date.now() - lastAttackAt) / cd);
+        if (prog < 1) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(78,204,163,0.85)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(sx, sy + R + 6, 5, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
       }
+
+      // 武器动画:攻击中播挥击,否则在身侧展示持握武器(徒手不画图标)
+      if (p.attackAnim) drawWeaponAttack(p, sx, sy);
+      else if (p.weapon && p.weapon !== 'fist' && !p.isDead) drawHeldWeapon(p, sx, sy, R);
 
       // Name tag
       const name = p.name || `P${id}`;
@@ -1094,6 +1367,13 @@
         mmCtx.fill();
       }
 
+      // 武器掉落物(按稀有度上色的小点)
+      for (const id in drops) {
+        const d = drops[id];
+        mmCtx.fillStyle = RARITY_COLOR[d.rarity] || '#b5c6d6';
+        mmCtx.fillRect(d.x * sx - 1, d.y * sy - 1, 2, 2);
+      }
+
       for (const [id, p] of Object.entries(players)) {
         if (p.isDead) continue;
         const px = (p.targetX ?? p.x) * sx;
@@ -1113,6 +1393,7 @@
     // ─── Render loop ──────────────────────────────────────────
     function render(now) {
       requestAnimationFrame(render);
+      frame++;
 
       resize();
       const W = canvas.width, H = canvas.height;
@@ -1184,6 +1465,10 @@
       // 石(碰撞体,玩家之下)
       for (const o of rocks) drawObstacle(o);
 
+      // 地面层:武器掉落物 + 重击震波环(均在玩家之下,可被玩家覆盖)
+      drawDrops();
+      drawShockwaves();
+
       // ── Enemies + Players sorted together by Y ──────────────────
       // 合并排序让敌人与玩家按 Y 轴正确叠层
       const drawList = [];
@@ -1198,6 +1483,9 @@
       }
       // Dead enemies rendered as faint markers (behind everything)
       for (const e of Object.values(enemies)) if (e.isDead) drawEnemy(e);
+
+      // 飞行物(法球/箭)—— 飞在玩家之上
+      drawProjectiles();
 
       // 树(树干挡人,树冠盖在玩家头顶)
       for (const o of trees) drawTree(o);
@@ -1225,7 +1513,7 @@
         ctx.strokeStyle = 'rgba(0,0,0,0.75)';
         ctx.lineWidth = 3;
         ctx.strokeText(d.text, dx, dy);
-        ctx.fillStyle = d.big ? '#ffdd00' : '#ff7766';
+        ctx.fillStyle = d.color || (d.big ? '#ffdd00' : '#ff7766');
         ctx.fillText(d.text, dx, dy);
         ctx.restore();
       }
@@ -1244,7 +1532,9 @@
 
       // ── HUD ─────────────────────────────────────────────────
       const aliveEnemies = Object.values(enemies).filter(e => !e.isDead).length;
-      statsEl.textContent = `PING: ${latency}ms  ·  PLAYERS: ${Object.keys(players).length}  ·  ENEMIES: ${aliveEnemies}  ·  ${weatherLabel(weather.kind)}`;
+      const myW = WEAPONS[players[myId]?.weapon] || WEAPONS.fist;
+      const wCol = RARITY_COLOR[myW.rarity] || '#eee';
+      statsEl.innerHTML = `PING: ${latency}ms  ·  PLAYERS: ${Object.keys(players).length}  ·  ENEMIES: ${aliveEnemies}  ·  ${weatherLabel(weather.kind)}  ·  <span style="color:${wCol}">⚔ ${myW.label}</span>`;
 
       drawMinimap();
     }

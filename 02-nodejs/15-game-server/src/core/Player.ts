@@ -1,6 +1,7 @@
 import { Entity } from './Entity';
 import { Session } from '../network/Session';
 import { GameConfig } from '../config';
+import { WeaponKind, WEAPONS } from './Weapon';
 
 export class Player extends Entity {
   readonly name: string;
@@ -9,11 +10,16 @@ export class Player extends Entity {
   maxHp: number = 100;
   radius: number = GameConfig.PLAYER_RADIUS; // 碰撞半径
   speed: number = 200; // pixels per second
-  attackRange: number = 80;
-  attackDamage: number = 10;
-  attackCooldown: number = 1000; // ms
+  // 攻击属性由当前武器决定(见 equip);初始为 fist,与旧版写死值一致
+  attackRange: number = WEAPONS.fist.range;
+  attackDamage: number = WEAPONS.fist.damage;
+  attackCooldown: number = WEAPONS.fist.cooldown; // ms
   lastAttackTime: number = 0;
   isDead: boolean = false;
+
+  // 装备与朝向
+  weapon: WeaponKind = 'fist';
+  facing: number = 0; // 弧度;移动时更新,攻击时朝向目标 → 驱动客户端方向性动画
 
   // AOI tracking
   aoiCellX: number = -1;
@@ -28,6 +34,15 @@ export class Player extends Entity {
 
   canAttack(): boolean {
     return !this.isDead && (Date.now() - this.lastAttackTime) >= this.attackCooldown;
+  }
+
+  /** 装备武器:把 Weapon 表的数值拷到玩家身上(死亡不清空,复活保留) */
+  equip(kind: WeaponKind): void {
+    const w = WEAPONS[kind];
+    this.weapon = kind;
+    this.attackDamage = w.damage;
+    this.attackRange = w.range;
+    this.attackCooldown = w.cooldown;
   }
 
   takeDamage(damage: number): void {
@@ -54,6 +69,8 @@ export class Player extends Entity {
       hp: this.hp,
       maxHp: this.maxHp,
       isDead: this.isDead,
+      weapon: this.weapon,
+      facing: Math.round(this.facing * 100) / 100,
     };
   }
 }

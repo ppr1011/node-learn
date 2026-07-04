@@ -54,4 +54,10 @@ export const GameConfig = {
   ITEM_RADIUS: 8,
   ITEM_VALUE: 10,
   ITEM_KINDS: ['coin', 'potion'] as const,
+
+  // 武器掉落(击杀敌人 → 加权随机掉落 → 走过自动拾取装备)
+  // 武器数值本身在 core/Weapon.ts,这里只放掉落调参旋钮
+  WEAPON_DROP_CHANCE: 0.5, // 每次击杀的掉落概率
+  WEAPON_PICKUP_RADIUS: 26, // 玩家中心多近算拾取
+  WEAPON_DROP_TTL: 45000, // 掉落物存活时长(ms),超时自然消失
 } as const;

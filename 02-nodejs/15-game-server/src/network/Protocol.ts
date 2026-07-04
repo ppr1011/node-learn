@@ -22,6 +22,13 @@ export enum MsgType {
   // Enemy events
   ENEMY_HIT = 's_enemy_hit',
   ENEMY_DEAD = 's_enemy_dead',
+
+  // Combat animation (每次攻击都广播,空挥也播动画;命中反馈仍走 DAMAGE/ENEMY_HIT)
+  ATTACK = 's_attack',
+
+  // Weapon drops(掉落 / 拾取 / 自然消失)
+  ITEM_SPAWN = 's_item_spawn',
+  ITEM_PICKUP = 's_item_pickup',
 }
 
 export interface GameMessage {

@@ -1,7 +1,7 @@
 import { Entity } from './Entity';
 
 export type EnemyKind = 'slime' | 'skeleton' | 'demon';
-export type EnemyAIState = 'idle' | 'patrol' | 'chase' | 'attack';
+export type EnemyAIState = 'idle' | 'patrol' | 'chase' | 'attack' | 'flee';
 
 interface KindStats {
   hp: number;
@@ -42,6 +42,7 @@ export class Enemy extends Entity {
   targetPlayerId: number | null = null;
   lastAttackTime: number = 0;
   idleTimer: number = 0; // seconds remaining in current idle pause
+  enraged: boolean = false; // demon 残血狂暴:一旦触发保持,速度提升(行为树 chase 分支设置)
 
   readonly attackDamage: number;
   readonly attackRange: number;
@@ -85,6 +86,7 @@ export class Enemy extends Entity {
     this.patrolTarget = null;
     this.targetPlayerId = null;
     this.lastAttackTime = 0;
+    this.enraged = false;
     this.idleTimer = 1 + Math.random() * 2;
     this.respawnAt = 0;
     this.position.x = x;

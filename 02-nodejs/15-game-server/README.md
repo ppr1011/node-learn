@@ -28,6 +28,7 @@ npm start
 
 - **WASD** / 方向键：移动
 - **空格**：攻击（近距离自动瞄准最近目标）
+- **击杀敌人**：按几率掉落随机武器，走过去即自动拾取装备（不同武器改变伤害/距离/冷却与攻击动画）
 - **Enter**：发送聊天消息
 
 ---
@@ -65,7 +66,7 @@ npm start
 
 ## 文档导航
 
-深度内容按「现有大章 + 代码结构」拆分为 7 篇，每篇都标注了对应的源码模块：
+深度内容按「现有大章 + 代码结构」拆分为 10 篇，每篇都标注了对应的源码模块：
 
 | 文档 | 主题 | 关联代码模块 |
 |------|------|--------------|
@@ -77,6 +78,8 @@ npm start
 | [06 · 客户端视觉系统](docs/06-客户端视觉系统.md) | 程序化地图、精灵渲染、粒子系统、浮动伤害、平滑摄像机、小地图、后期处理 | `client/index.html`、`collision-demo.html` |
 | [07 · 已知 Bug 修复记录](docs/07-Bug修复记录.md) | 玩家无法移动、攻击无反馈（含 TDZ 崩溃） | `core/GameWorld.ts`、`client/index.html` |
 | [08 · 天气视觉增强](docs/08-天气视觉增强.md) | 分层景深粒子、地面涟漪、闪电、体积雾、色调分级、平滑过渡、程序化/贴图双范式 | `client/index.html`、`client/assets/weather/`、`spawn/definitions/weather.ts` |
+| [09 · 行为树 AI](docs/09-行为树AI.md) | FSM vs 行为树、组合/装饰/叶子节点、running 语义、敌人 AI 重构、slime 逃跑 / demon 狂暴 | `ai/bt/*`、`systems/EnemyAISystem.ts`、`core/Enemy.ts` |
+| [10 · 武器与掉落系统](docs/10-武器与掉落系统.md) | 击杀掉落、加权稀有度、拾取装备、武器化攻击动画、飞行物/震波、CC0 贴图 | `core/Weapon.ts`、`core/WeaponDrop.ts`、`core/GameWorld.ts`、`systems/CombatSystem.ts`、`client/index.html` |
 
 ---
 
