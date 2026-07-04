@@ -1,58 +1,93 @@
 import { Player } from '../core/Player';
+import { Enemy } from '../core/Enemy';
 import { GameWorld } from '../core/GameWorld';
 import { MsgType } from '../network/Protocol';
 import { GameConfig } from '../config';
+
+const ENEMY_RESPAWN_TIME = GameConfig.ENEMY_RESPAWN_TIME;
 
 export class CombatSystem {
   constructor(private readonly world: GameWorld) {}
 
   handleAttack(player: Player): void {
     if (!player.canAttack()) return;
-
     player.lastAttackTime = Date.now();
 
-    // 找到攻击范围内的最近目标
+    // ── Try player-vs-player ──────────────────────────────────────
     const nearby = this.world.aoi.getNearbyPlayers(player);
-    let target: Player | null = null;
-    let minDist = Infinity;
+    let pvpTarget: Player | null = null;
+    let pvpDist = Infinity;
 
     for (const other of nearby) {
       if (other.isDead) continue;
       const dist = player.distanceTo(other);
-      if (dist <= player.attackRange && dist < minDist) {
-        minDist = dist;
-        target = other;
+      if (dist <= player.attackRange && dist < pvpDist) {
+        pvpDist = dist;
+        pvpTarget = other;
       }
     }
 
-    if (!target) return;
+    if (pvpTarget) {
+      pvpTarget.takeDamage(player.attackDamage);
 
-    target.takeDamage(player.attackDamage);
+      const damageMsg = {
+        attackerId: player.id,
+        targetId: pvpTarget.id,
+        damage: player.attackDamage,
+        targetHp: pvpTarget.hp,
+      };
 
-    // 通知所有附近玩家
-    const damageMsg = {
+      player.session.send(MsgType.DAMAGE, damageMsg);
+      pvpTarget.session.send(MsgType.DAMAGE, damageMsg);
+
+      for (const other of nearby) {
+        if (other.id !== player.id && other.id !== pvpTarget.id) {
+          other.session.send(MsgType.DAMAGE, damageMsg);
+        }
+      }
+
+      if (pvpTarget.isDead) this.handlePlayerDeath(pvpTarget);
+      return;
+    }
+
+    // ── Try player-vs-enemy ───────────────────────────────────────
+    let enemyTarget: Enemy | null = null;
+    let enemyDist = player.attackRange;
+
+    for (const enemy of this.world.enemies.values()) {
+      if (enemy.isDead) continue;
+      const dx = player.position.x - enemy.position.x;
+      const dy = player.position.y - enemy.position.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist <= enemyDist) { enemyDist = dist; enemyTarget = enemy; }
+    }
+
+    if (!enemyTarget) return;
+
+    enemyTarget.takeDamage(player.attackDamage);
+
+    const hitMsg = {
+      enemyId: enemyTarget.id,
       attackerId: player.id,
-      targetId: target.id,
       damage: player.attackDamage,
-      targetHp: target.hp,
+      enemyHp: enemyTarget.hp,
     };
 
-    player.session.send(MsgType.DAMAGE, damageMsg);
-    target.session.send(MsgType.DAMAGE, damageMsg);
+    player.session.send(MsgType.ENEMY_HIT, hitMsg);
+    for (const other of nearby) other.session.send(MsgType.ENEMY_HIT, hitMsg);
 
-    for (const other of nearby) {
-      if (other.id !== player.id && other.id !== target.id) {
-        other.session.send(MsgType.DAMAGE, damageMsg);
-      }
-    }
+    if (enemyTarget.isDead) {
+      const deadMsg = { enemyId: enemyTarget.id };
+      player.session.send(MsgType.ENEMY_DEAD, deadMsg);
+      for (const other of nearby) other.session.send(MsgType.ENEMY_DEAD, deadMsg);
 
-    // 目标死亡
-    if (target.isDead) {
-      this.handleDeath(target);
+      // Schedule respawn
+      enemyTarget.respawnAt = Date.now() + ENEMY_RESPAWN_TIME;
     }
   }
 
-  private handleDeath(player: Player): void {
+  /** Called by CombatSystem or EnemyAISystem when a player's HP drops to 0 */
+  handlePlayerDeath(player: Player): void {
     const nearby = this.world.aoi.getNearbyPlayers(player);
 
     player.session.send(MsgType.PLAYER_DEAD, { id: player.id });
@@ -60,14 +95,11 @@ export class CombatSystem {
       other.session.send(MsgType.PLAYER_DEAD, { id: player.id });
     }
 
-    // 3 秒后复活
     setTimeout(() => {
       if (!this.world.players.has(player.id)) return;
 
-      player.respawn(
-        Math.random() * GameConfig.MAP_WIDTH * 0.8 + GameConfig.MAP_WIDTH * 0.1,
-        Math.random() * GameConfig.MAP_HEIGHT * 0.8 + GameConfig.MAP_HEIGHT * 0.1
-      );
+      const spawn = this.world.findSafeSpawn(player.radius);
+      player.respawn(spawn.x, spawn.y);
 
       this.world.aoi.removePlayer(player);
       this.world.aoi.addPlayer(player);

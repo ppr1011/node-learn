@@ -186,7 +186,8 @@
       <div id="chat-box"></div>
       <div id="controls">
         WASD · 移动 &nbsp; SPACE · 攻击<br>
-        ENTER · 聊天 &nbsp; ESC · 关闭输入
+        ENTER · 聊天 &nbsp; ESC · 关闭输入<br>
+        <span style="color:#365">T · 切天气 &nbsp; [ ] · 强度 &nbsp; Y · 复原</span>
       </div>
       <div id="chat-input-container">
         <input id="chat-input" placeholder="按 Enter 发送..." />
@@ -224,7 +225,11 @@
     let screenShake = 0;
     let mapObjects = [];
     let obstacles = [];   // 服务端权威下发的碰撞障碍物
+    let enemies = {};     // id → enemy state (from server)
+    let weather = { kind: 'clear', intensity: 0 }; // 服务端权威下发的全局天气(仅 kind + intensity)
     let lastTime = 0;
+    // 天气视觉细节全部在客户端程序化生成(见文件末尾「Weather」章节),
+    // 天然随 intensity 缩放,零资源依赖。分层粒子池 fx 亦在那里定义。
 
     // ─── DOM ─────────────────────────────────────────────────
     const canvas     = document.getElementById('canvas');
@@ -324,6 +329,11 @@
           players[myId] = msg.data.self;
           for (const p of msg.data.players) players[p.id] = p;
           obstacles = msg.data.obstacles || [];
+          if (msg.data.enemies) {
+            enemies = {};
+            for (const e of msg.data.enemies) enemies[e.id] = e;
+          }
+          if (msg.data.weather) { weather = msg.data.weather; addSysMsg(`当前天气: ${weatherLabel(weather.kind)}`); }
           addSysMsg(`进入了游戏世界 (${mapWidth}x${mapHeight})`);
           generateMap();
           break;
@@ -347,6 +357,21 @@
               players[p.id] = p;
             }
           }
+          if (msg.data.enemies) {
+            for (const e of msg.data.enemies) {
+              if (enemies[e.id]) {
+                const prev = enemies[e.id];
+                // Smooth interpolation targets
+                enemies[e.id].targetX = e.x;
+                enemies[e.id].targetY = e.y;
+                enemies[e.id].hp = e.hp;
+                enemies[e.id].isDead = e.isDead;
+                enemies[e.id].state = e.state;
+              } else {
+                enemies[e.id] = { ...e, targetX: e.x, targetY: e.y };
+              }
+            }
+          }
           break;
 
         case 's_chat':
@@ -362,6 +387,28 @@
             spawnHit(tx, ty, msg.data.damage);
             spawnDmgNum(tx, ty, msg.data.damage);
             if (msg.data.targetId === myId) screenShake = 9;
+          }
+          break;
+        }
+
+        case 's_enemy_hit': {
+          const en = enemies[msg.data.enemyId];
+          if (en) {
+            en.hitFlash = 8;
+            en.hp = msg.data.enemyHp;
+            const ex = en.targetX ?? en.x, ey = en.targetY ?? en.y;
+            spawnHit(ex, ey, msg.data.damage);
+            spawnDmgNum(ex, ey, msg.data.damage);
+          }
+          break;
+        }
+
+        case 's_enemy_dead': {
+          const en = enemies[msg.data.enemyId];
+          if (en) {
+            en.isDead = true;
+            spawnDeath(en.targetX ?? en.x, en.targetY ?? en.y);
+            addSysMsg(`击杀了 ${en.kind}!`);
           }
           break;
         }
@@ -383,6 +430,12 @@
           }
           spawnRing(msg.data.x, msg.data.y, '#ffe066', 16);
           if (msg.data.id === myId) addSysMsg('✦ 已复活！');
+          break;
+
+        case 's_weather':
+          if (weatherOverride) break;          // 调试强制天气时,忽略服务端下发
+          weather = msg.data;
+          addSysMsg(`天气变化: ${weatherLabel(weather.kind)}`);
           break;
 
         case 's_pong':
@@ -431,6 +484,24 @@
 
       keys[e.key.toLowerCase()] = true;
 
+      // ── 天气调试(纯客户端预览,不影响服务端/他人) ──────────────
+      // T 循环切换天气;[ / ] 调强度;Y 取消覆盖,交回服务端权威
+      const k = e.key.toLowerCase();
+      if (k === 't') { cycleWeatherDebug(); return; }
+      if (k === 'y') {
+        weatherOverride = null;
+        addSysMsg('天气已交回服务端权威');
+        return;
+      }
+      if (k === '[' || k === ']') {
+        const step = k === ']' ? 0.1 : -0.1;
+        const it = Math.max(0.1, Math.min(1, (weather.intensity || 0) + step));
+        weather = { ...weather, intensity: it };
+        weatherOverride = { ...weather };
+        addSysMsg(`天气强度: ${it.toFixed(1)}`);
+        return;
+      }
+
       if (e.key === ' ') {
         e.preventDefault();
         if (ws && connected && myId) {
@@ -439,6 +510,18 @@
         }
       }
     });
+
+    // 客户端天气覆盖:非 null 时忽略服务端 s_weather,用于本地预览各类效果
+    let weatherOverride = null;
+    function cycleWeatherDebug() {
+      const kinds = ['clear', 'rain', 'fog', 'snow'];
+      const cur = kinds.indexOf(weather.kind);
+      const next = kinds[(cur + 1) % kinds.length];
+      const it = next === 'clear' ? 0 : (weather.intensity && weather.intensity > 0 ? weather.intensity : 0.8);
+      weather = { kind: next, intensity: it };
+      weatherOverride = { ...weather };
+      addSysMsg(`[调试] 强制天气: ${weatherLabel(next)}${next === 'clear' ? '' : ` (强度 ${it.toFixed(1)})`}`);
+    }
 
     document.addEventListener('keyup', e => {
       keys[e.key.toLowerCase()] = false;
@@ -638,6 +721,211 @@
       return sx > -pad && sx < canvas.width + pad && sy > -pad && sy < canvas.height + pad;
     }
 
+    // ─── Enemy Sprites (Kenney Tiny Dungeon · CC0) ────────────────
+    // 贴图: client/assets/enemies/{slime,skeleton,demon}.png
+    // 来源: https://kenney.nl/assets/tiny-dungeon  许可: CC0 1.0
+    // 加载失败 → 自动回退程序化像素画(同天气系统的范式 A/B 设计)
+    const ENEMY_SPRITE_PATHS = {
+      slime:    'assets/enemies/slime.png',
+      skeleton: 'assets/enemies/skeleton.png',
+      demon:    'assets/enemies/demon.png',
+    };
+    const _enemySprites = {};
+    function loadEnemySprite(kind) {
+      if (kind in _enemySprites) return _enemySprites[kind];
+      const img = new Image();
+      img.onerror = () => { _enemySprites[kind] = null; };
+      img.src = ENEMY_SPRITE_PATHS[kind] || '';
+      _enemySprites[kind] = img;
+      return img;
+    }
+    const spriteOK = img => !!img && img.complete && img.naturalWidth > 0;
+
+    // Enemy kind visual config (fallback procedural drawing colors)
+    const ENEMY_VIS = {
+      slime:    { color: '#43e1b3', accent: '#25956a', glow: '#00ffaa', label: '史莱姆' },
+      skeleton: { color: '#c0cbdc', accent: '#8b9bb4', glow: '#aabbcc', label: '骷髅兵' },
+      demon:    { color: '#e84537', accent: '#c02010', glow: '#ff4422', label: '火焰恶魔' },
+    };
+
+    // Pre-generate procedural sprite canvases (one per kind, cached)
+    const _procSprites = {};
+    function getProcSprite(kind) {
+      if (_procSprites[kind]) return _procSprites[kind];
+      const vis = ENEMY_VIS[kind] || ENEMY_VIS.slime;
+      const oc = document.createElement('canvas');
+      oc.width = 32; oc.height = 32;
+      const oc2 = oc.getContext('2d');
+      drawProceduralEnemy(oc2, kind, vis, 16, 16);
+      _procSprites[kind] = oc;
+      return oc;
+    }
+
+    function drawProceduralEnemy(oc2, kind, vis, cx, cy) {
+      // pixel art style: draw at 2x pixel grid (each "pixel" = 2x2 real pixels)
+      const px = (col, row, color, w=2, h=2) => {
+        oc2.fillStyle = color;
+        oc2.fillRect(cx - 14 + col * 2, cy - 14 + row * 2, w, h);
+      };
+
+      if (kind === 'slime') {
+        const c = vis.color, d = vis.accent, hi = '#96ffe6';
+        // body rows (7×5 grid, 0-indexed)
+        const body = [
+          '..ccc..',
+          '.cdddc.',
+          'ccdddcc',
+          'ccdddcc',
+          '.ccccc.',
+          '..ccc..',
+        ];
+        body.forEach((row, r) => [...row].forEach((ch, c2) => {
+          if (ch === 'c') px(c2+1, r+2, c);
+          else if (ch === 'd') px(c2+1, r+2, d);
+        }));
+        // eyes
+        px(2, 3, '#fff'); px(4, 3, '#fff');
+        px(2, 3, '#1a1a2e', 1, 1); px(4, 3, '#1a1a2e', 1, 1);
+        // highlight
+        px(2, 2, 'rgba(255,255,255,0.5)');
+      } else if (kind === 'skeleton') {
+        const c = vis.color, d = vis.accent;
+        // skull
+        oc2.fillStyle = c;
+        oc2.fillRect(cx-6, cy-13, 12, 10);
+        // eye sockets
+        oc2.fillStyle = '#3f2631';
+        oc2.fillRect(cx-5, cy-11, 4, 4);
+        oc2.fillRect(cx+1, cy-11, 4, 4);
+        // body
+        oc2.fillStyle = c;
+        oc2.fillRect(cx-4, cy-3, 8, 8);
+        oc2.fillStyle = d;
+        oc2.fillRect(cx-3, cy-1, 2, 4); oc2.fillRect(cx+1, cy-1, 2, 4);
+        // ribs
+        oc2.fillStyle = '#3f2631';
+        oc2.fillRect(cx-3, cy-2, 6, 1); oc2.fillRect(cx-3, cy, 6, 1); oc2.fillRect(cx-3, cy+2, 6, 1);
+        // legs
+        oc2.fillStyle = c;
+        oc2.fillRect(cx-4, cy+5, 3, 6); oc2.fillRect(cx+1, cy+5, 3, 6);
+      } else { // demon
+        const c = vis.color, d = vis.accent;
+        // head + horns
+        oc2.fillStyle = '#8b0000'; // dark red horns
+        oc2.fillRect(cx-7, cy-15, 3, 6); oc2.fillRect(cx+4, cy-15, 3, 6);
+        // head
+        oc2.fillStyle = c;
+        oc2.fillRect(cx-6, cy-12, 12, 10);
+        // eyes (glowing)
+        oc2.fillStyle = '#ffcc00';
+        oc2.fillRect(cx-4, cy-10, 4, 3); oc2.fillRect(cx+1, cy-10, 4, 3);
+        oc2.fillStyle = '#ff4400';
+        oc2.fillRect(cx-3, cy-10, 2, 2); oc2.fillRect(cx+2, cy-10, 2, 2);
+        // body
+        oc2.fillStyle = d;
+        oc2.fillRect(cx-5, cy-2, 10, 9);
+        // wings
+        oc2.fillStyle = '#6b0000';
+        oc2.fillRect(cx-11, cy-2, 6, 6); oc2.fillRect(cx+5, cy-2, 6, 6);
+        // legs
+        oc2.fillStyle = c;
+        oc2.fillRect(cx-4, cy+7, 3, 5); oc2.fillRect(cx+1, cy+7, 3, 5);
+      }
+    }
+
+    // ─── Draw Enemy ────────────────────────────────────────────────
+    function drawEnemy(e) {
+      // Smooth interpolation (same pattern as players)
+      if (e.targetX !== undefined) {
+        if (!e.x) e.x = e.targetX;
+        if (!e.y) e.y = e.targetY;
+        e.x += (e.targetX - e.x) * 0.22;
+        e.y += (e.targetY - e.y) * 0.22;
+      }
+
+      if (!isVisible(e.x, e.y, 60)) return;
+      const sx = Math.round(e.x - camera.x);
+      const sy = Math.round(e.y - camera.y);
+      const vis = ENEMY_VIS[e.kind] || ENEMY_VIS.slime;
+      const R = 14;
+
+      if (e.isDead) {
+        ctx.save();
+        ctx.globalAlpha = 0.25;
+        ctx.fillStyle = vis.color;
+        ctx.beginPath(); ctx.arc(sx, sy, R, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+        return;
+      }
+
+      if (e.hitFlash > 0) e.hitFlash--;
+
+      // Ground shadow
+      ctx.save();
+      ctx.globalAlpha = 0.22;
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.ellipse(sx + 2, sy + R - 2, R * 0.8, R * 0.25, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // Glow ring (ambient / attack state)
+      if (e.state === 'attack' || e.state === 'chase') {
+        const grd = ctx.createRadialGradient(sx, sy, R * 0.5, sx, sy, R * 2.2);
+        grd.addColorStop(0, vis.glow + '44');
+        grd.addColorStop(1, 'transparent');
+        ctx.fillStyle = grd;
+        ctx.beginPath(); ctx.arc(sx, sy, R * 2.2, 0, Math.PI * 2); ctx.fill();
+      }
+
+      // Try sprite rendering (Kenney Tiny Dungeon, 16×16 → drawn at 2×)
+      const spr = loadEnemySprite(e.kind);
+      if (spriteOK(spr)) {
+        ctx.save();
+        if (e.hitFlash > 0) {
+          ctx.filter = 'brightness(3) saturate(0)';
+        }
+        // Draw 16×16 sprite scaled to 32×32, centered on (sx, sy-2) for visual balance
+        ctx.imageSmoothingEnabled = false; // keep pixel art crisp
+        ctx.drawImage(spr, sx - 16, sy - 18, 32, 32);
+        ctx.restore();
+      } else {
+        // Procedural fallback
+        const proc = getProcSprite(e.kind);
+        ctx.save();
+        if (e.hitFlash > 0) ctx.filter = 'brightness(3) saturate(0)';
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(proc, sx - 16, sy - 16);
+        ctx.restore();
+      }
+
+      // Name/kind label
+      const label = vis.label || e.kind;
+      ctx.font = 'bold 10px Courier New';
+      ctx.textAlign = 'center';
+      const tw = ctx.measureText(label).width;
+      const nameY = sy - R - 14;
+      ctx.save();
+      ctx.globalAlpha = 0.55;
+      ctx.fillStyle = '#000';
+      ctx.fillRect(sx - tw / 2 - 4, nameY - 10, tw + 8, 13);
+      ctx.restore();
+      ctx.fillStyle = vis.color;
+      ctx.fillText(label, sx, nameY);
+
+      // HP bar
+      const bW = 34, bH = 4;
+      const bX = sx - bW / 2, bY = sy - R - 7;
+      const ratio = Math.max(0, e.hp / (e.maxHp || 1));
+      const hpColor = ratio > 0.6 ? '#4ecca3' : ratio > 0.3 ? '#f0a500' : '#e94560';
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(bX - 1, bY - 1, bW + 2, bH + 2);
+      ctx.fillStyle = '#111';
+      ctx.fillRect(bX, bY, bW, bH);
+      ctx.fillStyle = hpColor;
+      ctx.fillRect(bX, bY, bW * ratio, bH);
+    }
+
     // ─── Draw player ──────────────────────────────────────────
     function drawPlayer(p, id) {
       // Smooth interpolate
@@ -794,6 +1082,18 @@
       mmCtx.strokeRect(camera.x * sx, camera.y * sy, canvas.width * sx, canvas.height * sy);
 
       // Players
+      // Enemies on minimap (colored by kind)
+      const ENEMY_MM_COLOR = { slime: '#43e1b3', skeleton: '#8b9bb4', demon: '#e84537' };
+      for (const e of Object.values(enemies)) {
+        if (e.isDead) continue;
+        const ex = (e.targetX ?? e.x) * sx;
+        const ey = (e.targetY ?? e.y) * sy;
+        mmCtx.fillStyle = ENEMY_MM_COLOR[e.kind] || '#ff8800';
+        mmCtx.beginPath();
+        mmCtx.arc(ex, ey, 1.5, 0, Math.PI * 2);
+        mmCtx.fill();
+      }
+
       for (const [id, p] of Object.entries(players)) {
         if (p.isDead) continue;
         const px = (p.targetX ?? p.x) * sx;
@@ -884,9 +1184,20 @@
       // 石(碰撞体,玩家之下)
       for (const o of rocks) drawObstacle(o);
 
-      // ── Players (sorted by Y) ───────────────────────────────
-      const sortedP = Object.entries(players).sort(([,a],[,b]) => (a.y||0) - (b.y||0));
-      for (const [id, p] of sortedP) drawPlayer(p, id);
+      // ── Enemies + Players sorted together by Y ──────────────────
+      // 合并排序让敌人与玩家按 Y 轴正确叠层
+      const drawList = [];
+      for (const [id, p] of Object.entries(players))
+        drawList.push({ tag: 'player', obj: p, id, y: p.y || 0 });
+      for (const e of Object.values(enemies))
+        if (!e.isDead) drawList.push({ tag: 'enemy', obj: e, y: e.y || 0 });
+      drawList.sort((a, b) => a.y - b.y);
+      for (const item of drawList) {
+        if (item.tag === 'player') drawPlayer(item.obj, item.id);
+        else drawEnemy(item.obj);
+      }
+      // Dead enemies rendered as faint markers (behind everything)
+      for (const e of Object.values(enemies)) if (e.isDead) drawEnemy(e);
 
       // 树(树干挡人,树冠盖在玩家头顶)
       for (const o of trees) drawTree(o);
@@ -928,10 +1239,248 @@
 
       ctx.restore(); // end screen shake
 
+      // ── Weather overlay (屏幕空间,不随震动/摄像机移动) ──────────
+      drawWeather(W, H);
+
       // ── HUD ─────────────────────────────────────────────────
-      statsEl.textContent = `PING: ${latency}ms  ·  PLAYERS: ${Object.keys(players).length}`;
+      const aliveEnemies = Object.values(enemies).filter(e => !e.isDead).length;
+      statsEl.textContent = `PING: ${latency}ms  ·  PLAYERS: ${Object.keys(players).length}  ·  ENEMIES: ${aliveEnemies}  ·  ${weatherLabel(weather.kind)}`;
 
       drawMinimap();
+    }
+
+    // ═══ Weather ══════════════════════════════════════════════════
+    // 服务端只下发 { kind, intensity };所有视觉细节在客户端「程序化」生成,
+    // 天然随 intensity 缩放、零资源依赖(范式 A)。雪花额外提供可选的贴图
+    // 渲染分支(范式 B):配置了贴图就用贴图,否则自动回退程序化 —— 默认零资源可跑。
+    function weatherLabel(kind) {
+      return ({ clear: '☀ 晴', rain: '🌧 雨', fog: '🌫 雾', snow: '❄ 雪' })[kind] || kind;
+    }
+
+    // ── 分层粒子池(对象池:按目标数量增删,避免每帧新建) ──────────────
+    const fx = {
+      kind: 'clear',
+      ramp: 0,          // 天气切换后的淡入进度 0→1,让色调/粒子平滑登场
+      rain: [],         // 雨滴:每滴带景深 d,决定长度/速度/亮度(近实远虚)
+      ripples: [],      // 雨点落地的溅射涟漪(top-down:散布全屏而非仅屏幕底)
+      snow: [],         // 雪花:多层视差 + 摆动飘落
+      fog: [],          // 体积雾团:柔光圆缓慢横向流动
+      flash: 0,         // 闪电全屏闪光强度 1→0
+      bolt: null,       // 当前闪电折线(数组)或 null
+      boltLife: 0,      // 折线剩余显示帧
+      strikeCd: 140,    // 下次落雷倒计时(帧)
+    };
+    const RAIN_WIND = -2.4; // 雨的水平风偏(负=向左),乘以景深 → 近处偏得更多
+
+    // ── 可选贴图接入(范式 B) ────────────────────────────────────────
+    // 默认留空 → 全程程序化;想演示贴图管线时,把资源放到下方路径并解开注释即可。
+    // 加载失败(文件不存在)会自动回退程序化,demo 始终可运行。
+    const WEATHER_SPRITES = {
+      snow: 'assets/weather/snowflake.png',   // Kenney Particle Pack(CC0),已内置;删掉此行即回退程序化雪花
+      // rain: 'assets/weather/raindrop.png',  // 备用素材:雨当前走程序化线段,如需贴图雨自行加渲染分支
+    };
+    const _spriteCache = {};
+    function weatherSprite(key) {
+      if (!(key in WEATHER_SPRITES)) return null;
+      if (key in _spriteCache) return _spriteCache[key];
+      const img = new Image();
+      img.onerror = () => { _spriteCache[key] = null; }; // 缺资源 → 回退程序化
+      img.src = WEATHER_SPRITES[key];
+      _spriteCache[key] = img; // 先占位;draw 时以 complete && naturalWidth 判断是否就绪
+      return img;
+    }
+    const spriteReady = (img) => !!img && img.complete && img.naturalWidth > 0;
+
+    // ── 粒子工厂 ──────────────────────────────────────────────────────
+    function newRainDrop(W, H) {
+      const d = 0.35 + Math.random() * 0.65; // 景深:1=近(长/快/亮),0=远(短/慢/淡)
+      return { x: Math.random() * (W + 200) - 100, y: Math.random() * H, d,
+               len: 7 + d * 15, spd: 8 + d * 13 };
+    }
+    function newSnowFlake(W, H) {
+      const d = 0.3 + Math.random() * 0.7;
+      return { x: Math.random() * W, y: Math.random() * H, d,
+               r: 1 + d * 2.6, spd: 0.5 + d * 1.4,
+               sway: Math.random() * Math.PI * 2, swaySpd: 0.01 + Math.random() * 0.02,
+               spin: Math.random() * Math.PI * 2 };
+    }
+    function newFogBlob(W, H) {
+      return { x: Math.random() * W, y: Math.random() * H * 0.92,
+               r: 120 + Math.random() * 220, spd: 0.15 + Math.random() * 0.35,
+               a: 0.05 + Math.random() * 0.08 };
+    }
+
+    // ── 每帧同步粒子池到「目标数量」(目标随 强度 × 淡入进度 缩放) ────────
+    function syncWeather(W, H) {
+      const kind = weather.kind, it = weather.intensity || 0;
+      if (kind !== fx.kind) {                 // 天气切换:清空旧池,淡入重置
+        fx.rain.length = fx.snow.length = fx.fog.length = fx.ripples.length = 0;
+        fx.flash = 0; fx.bolt = null; fx.ramp = 0;
+        fx.kind = kind;
+      }
+      fx.ramp = Math.min(1, fx.ramp + 0.02);  // 约 0.8s 淡入完成
+      const scale = it * fx.ramp;
+      const fit = (pool, target, make) => {
+        while (pool.length < target) pool.push(make(W, H));
+        if (pool.length > target) pool.length = target;
+      };
+      if (kind === 'rain')      fit(fx.rain, Math.floor(scale * 340), newRainDrop);
+      else if (kind === 'snow') fit(fx.snow, Math.floor(scale * 220), newSnowFlake);
+      else if (kind === 'fog')  fit(fx.fog,  5 + Math.floor(scale * 6), newFogBlob);
+    }
+
+    // ── 全局天气色调分级(铺在最底层,给整个画面定调) ──────────────────
+    function ambientTint(W, H, kind, it) {
+      let c = null;
+      const k = fx.ramp; // 随淡入渐显,避免切换时色调突变
+      if (kind === 'rain')      c = `rgba(18,26,48,${(0.16 + 0.22 * it) * k})`;   // 阴冷偏蓝、压暗
+      else if (kind === 'snow') c = `rgba(150,172,210,${(0.05 + 0.10 * it) * k})`; // 清冷偏亮
+      else if (kind === 'clear')c = `rgba(255,236,180,0.05)`;                      // 恒定暖阳
+      // fog 的色调由 drawFog 自己负责(避免叠加两层灰导致过暗)
+      if (!c) return;
+      ctx.save(); ctx.fillStyle = c; ctx.fillRect(0, 0, W, H); ctx.restore();
+    }
+
+    // ── 雨 ────────────────────────────────────────────────────────────
+    function drawRain(W, H, it) {
+      ctx.save();
+      ctx.lineCap = 'round';
+      for (const p of fx.rain) {
+        ctx.strokeStyle = `rgba(175,200,232,${(0.18 + 0.42 * p.d) * fx.ramp})`;
+        ctx.lineWidth = 0.6 + p.d * 1.1;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p.x + RAIN_WIND * p.d, p.y + p.len);
+        ctx.stroke();
+        p.y += p.spd; p.x += RAIN_WIND * p.d * 0.25;
+        if (p.y > H) {                       // 落地 → 在屏幕随机处激起涟漪
+          if (Math.random() < 0.5) spawnRipple(Math.random() * W, Math.random() * H);
+          p.y = -p.len; p.x = Math.random() * (W + 200) - 100;
+        }
+        if (p.x < -100) p.x += W + 200; else if (p.x > W + 100) p.x -= W + 200;
+      }
+      ctx.restore();
+      drawRipples();
+      updateLightning(it);
+      drawLightning(W, H);
+    }
+
+    function spawnRipple(x, y) {
+      if (fx.ripples.length > 60) return;    // 上限,防止密度失控
+      fx.ripples.push({ x, y, r: 1, max: 5 + Math.random() * 7, life: 1 });
+    }
+    function drawRipples() {
+      ctx.save();
+      for (let i = fx.ripples.length - 1; i >= 0; i--) {
+        const s = fx.ripples[i];
+        s.r += 0.6; s.life -= 0.04;
+        if (s.life <= 0) { fx.ripples.splice(i, 1); continue; }
+        ctx.strokeStyle = `rgba(190,210,235,${s.life * 0.5})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.ellipse(s.x, s.y, s.r, s.r * 0.4, 0, 0, Math.PI * 2); // 压扁模拟俯视透视
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // 闪电:仅在较强降雨(it ≥ 0.55)时随机触发,含全屏闪光 + 可选折线
+    function updateLightning(it) {
+      if (it < 0.55) { fx.flash = 0; fx.bolt = null; return; }
+      if (--fx.strikeCd <= 0) {
+        fx.flash = 1;
+        fx.strikeCd = 150 + Math.floor(Math.random() * 450); // ~2.5~10s @60fps
+        fx.bolt = Math.random() < 0.6 ? makeBolt() : null;
+        fx.boltLife = 6;
+      }
+      fx.flash *= 0.86;                       // 快速衰减
+      if (fx.boltLife > 0) fx.boltLife--;
+    }
+    function makeBolt() {
+      let x = Math.random() * canvas.width, y = 0;
+      const pts = [{ x, y }];
+      while (y < canvas.height * 0.7) {
+        y += 20 + Math.random() * 40;
+        x += (Math.random() - 0.5) * 60;
+        pts.push({ x, y });
+      }
+      return pts;
+    }
+    function drawLightning(W, H) {
+      if (fx.flash > 0.02) {
+        ctx.save();
+        ctx.fillStyle = `rgba(220,228,255,${fx.flash * 0.5})`;
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+      }
+      if (fx.bolt && fx.boltLife > 0) {
+        ctx.save();
+        ctx.strokeStyle = `rgba(235,240,255,${fx.boltLife / 6})`;
+        ctx.lineWidth = 2; ctx.shadowColor = '#cdd6ff'; ctx.shadowBlur = 16;
+        ctx.beginPath();
+        ctx.moveTo(fx.bolt[0].x, fx.bolt[0].y);
+        for (const pt of fx.bolt) ctx.lineTo(pt.x, pt.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // ── 雪(程序化 / 贴图 双范式) ───────────────────────────────────────
+    function drawSnow(W, H, it) {
+      const spr = weatherSprite('snow');
+      const useSprite = spriteReady(spr);
+      ctx.save();
+      if (!useSprite) ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      for (const p of fx.snow) {
+        p.sway += p.swaySpd;
+        p.y += p.spd;
+        p.x += Math.sin(p.sway) * 0.6 + 0.15; // 摆动 + 轻微风
+        p.spin += 0.01;
+        if (p.y > H) { p.y = -4; p.x = Math.random() * W; }
+        if (p.x < -5) p.x = W + 5; else if (p.x > W + 5) p.x = -5;
+        const alpha = (0.5 + 0.45 * p.d) * fx.ramp;
+        if (useSprite) {
+          const s = p.r * 3;
+          ctx.save();
+          ctx.globalAlpha = alpha;
+          ctx.translate(p.x, p.y); ctx.rotate(p.spin);
+          ctx.drawImage(spr, -s / 2, -s / 2, s, s);
+          ctx.restore();
+        } else {
+          ctx.globalAlpha = alpha;
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      ctx.restore();
+    }
+
+    // ── 雾:柔光底 + 缓慢横向流动的体积雾团(取代原来的一层平铺半透明) ──────
+    function drawFog(W, H, it) {
+      ctx.save();
+      ctx.fillStyle = `rgba(200,206,218,${0.12 * it * fx.ramp})`;
+      ctx.fillRect(0, 0, W, H);
+      for (const b of fx.fog) {
+        b.x += b.spd;
+        if (b.x - b.r > W) b.x = -b.r;        // 飘出右侧 → 从左侧回卷
+        const a = b.a * it * fx.ramp;
+        const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
+        g.addColorStop(0, `rgba(214,218,228,${a})`);
+        g.addColorStop(1, 'rgba(214,218,228,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // ── 天气渲染总入口(屏幕空间,叠在世界与暗角之上) ────────────────────
+    function drawWeather(W, H) {
+      syncWeather(W, H);
+      const kind = weather.kind, it = weather.intensity || 0;
+      ambientTint(W, H, kind, it);
+      if (kind === 'rain')      drawRain(W, H, it);
+      else if (kind === 'snow') drawSnow(W, H, it);
+      else if (kind === 'fog')  drawFog(W, H, it);
+      // clear:仅 ambientTint 的暖调
     }
 
     requestAnimationFrame(render);

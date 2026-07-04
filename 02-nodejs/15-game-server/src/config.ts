@@ -33,4 +33,25 @@ export const GameConfig = {
   // 游戏规则
   MAX_CHAT_LENGTH: 100,
   RESPAWN_TIME: 3000, // 死亡后 3 秒复活
+
+  // 天气(统一生成框架的 dynamic 示例:服务端定时重掷 + 广播,多端一致)
+  WEATHER_KINDS: ['clear', 'rain', 'fog', 'snow'] as const, // 第一个约定为 clear
+  WEATHER_MIN_INTENSITY: 0.35,
+  WEATHER_MAX_INTENSITY: 1,
+  WEATHER_CHANGE_INTERVAL: 30000, // 每 30 秒重掷一次天气
+
+  // 敌人:已开启 (count > 0)
+  ENEMY_COUNT: 20,
+  ENEMY_GAP: 30,
+  ENEMY_RADIUS: 14,
+  ENEMY_HP: 40,
+  ENEMY_SPEED: 120,
+  ENEMY_KINDS: ['slime', 'skeleton', 'demon'] as const,
+  ENEMY_RESPAWN_TIME: 10000, // 10s 后原地复活
+
+  ITEM_COUNT: 0,
+  ITEM_GAP: 20,
+  ITEM_RADIUS: 8,
+  ITEM_VALUE: 10,
+  ITEM_KINDS: ['coin', 'potion'] as const,
 } as const;

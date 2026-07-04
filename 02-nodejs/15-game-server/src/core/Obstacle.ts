@@ -1,5 +1,5 @@
 /**
- * 障碍物 + 空间分割网格
+ * 障碍物碰撞数据结构:Obstacle 类型 + 空间分割网格(broad-phase)
  *
  * 世界里所有「实心」物体(树、石)都是障碍物,统一由服务端权威生成、下发,
  * 碰撞解算也只在服务端进行。客户端只按下发数据渲染,不再自己生成实心物。
@@ -9,6 +9,9 @@
  * 旋转无关,非常适合服务端每 tick 高频调用。不同类型用不同碰撞半径:
  *   - tree: 碰撞半径 = 树干(远小于树冠视觉尺寸)→ 只挡树干,树冠盖在玩家头顶
  *   - rock: 碰撞半径 ≈ 视觉半径 → 整块挡人
+ *
+ * 注:障碍物的「生成」逻辑已迁到统一生成框架 src/spawn/definitions/obstacles.ts,
+ * 本文件只保留碰撞相关的数据结构。
  */
 
 export type ObstacleType = 'tree' | 'rock';
@@ -21,73 +24,6 @@ export interface Obstacle {
   radius: number; // 碰撞半径
   size: number;   // 渲染视觉尺寸(树冠/石体)
   variant: number; // 造型/配色变体(客户端渲染用)
-}
-
-/**
- * 确定性伪随机:与客户端 srand 同思路(Math.sin 取小数),
- * 相同 seed 恒定返回 [0, 1) 之间同一个值。
- */
-function srand(seed: number): number {
-  const x = Math.sin(seed + 1) * 10000;
-  return x - Math.floor(x);
-}
-
-interface GenSpec {
-  mapWidth: number;
-  mapHeight: number;
-  seed: number;
-  gap: number;
-  tree: { count: number; minSize: number; maxSize: number; trunkRatio: number };
-  rock: { count: number; minRadius: number; maxRadius: number };
-}
-
-/**
- * 生成一批不重叠、且远离地图边缘的障碍物(树 + 石)。
- * 采用拒绝采样:与已生成障碍物的碰撞体重叠(留 gap 间隙)则丢弃重试。
- */
-export function generateObstacles(spec: GenSpec): Obstacle[] {
-  const { mapWidth, mapHeight, seed, gap } = spec;
-  const obstacles: Obstacle[] = [];
-  let seq = 0;
-
-  // 与已放置障碍物按「碰撞半径 + 间隙」做重叠检测
-  const overlaps = (x: number, y: number, radius: number): boolean =>
-    obstacles.some(o => Math.hypot(o.x - x, o.y - y) < o.radius + radius + gap);
-
-  // 通用放置:给定类型和尺寸区间,拒绝采样放置 count 个
-  const place = (
-    type: ObstacleType,
-    count: number,
-    pick: (s: number) => { radius: number; size: number; variant: number }
-  ): void => {
-    let attempt = 0;
-    const maxAttempts = count * 40;
-    let placed = 0;
-    while (placed < count && attempt < maxAttempts) {
-      const s = seed + seq * 7 + attempt * 3;
-      const { radius, size, variant } = pick(s);
-      // 用视觉尺寸做边距,避免树冠/石体压在地图边界外
-      const margin = Math.max(radius, size * 0.5);
-      const x = margin + srand(s + 1) * (mapWidth - margin * 2);
-      const y = margin + srand(s + 2) * (mapHeight - margin * 2);
-      attempt++;
-      if (overlaps(x, y, radius)) continue;
-      obstacles.push({ id: ++seq, type, x, y, radius, size, variant });
-      placed++;
-    }
-  };
-
-  place('tree', spec.tree.count, (s) => {
-    const size = spec.tree.minSize + srand(s) * (spec.tree.maxSize - spec.tree.minSize);
-    return { radius: size * spec.tree.trunkRatio, size, variant: Math.floor(srand(s + 5) * 3) };
-  });
-
-  place('rock', spec.rock.count, (s) => {
-    const radius = spec.rock.minRadius + srand(s) * (spec.rock.maxRadius - spec.rock.minRadius);
-    return { radius, size: radius, variant: Math.floor(srand(s + 5) * 3) };
-  });
-
-  return obstacles;
 }
 
 /**

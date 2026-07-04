@@ -1,23 +1,35 @@
 import { Player } from './Player';
+import { Enemy, EnemyKind } from './Enemy';
 import { AOIManager } from './AOI';
-import { Obstacle, ObstacleGrid, generateObstacles } from './Obstacle';
+import { Obstacle, ObstacleGrid } from './Obstacle';
+import { Spawner } from '../spawn/Spawner';
+import { obstacleDefinition, ObstacleSpawn } from '../spawn/definitions/obstacles';
+import { weatherDefinition, WeatherState } from '../spawn/definitions/weather';
+import { enemyDefinition, EnemySpawn } from '../spawn/definitions/enemies';
+import { itemDefinition } from '../spawn/definitions/items';
 import { GameTimer } from '../utils/Timer';
 import { MovementSystem } from '../systems/MovementSystem';
 import { ChatSystem } from '../systems/ChatSystem';
 import { CombatSystem } from '../systems/CombatSystem';
+import { EnemyAISystem } from '../systems/EnemyAISystem';
 import { GameConfig } from '../config';
 import { logger } from '../utils/Logger';
 import { MsgType } from '../network/Protocol';
 
 export class GameWorld {
   readonly players: Map<number, Player> = new Map();
+  readonly enemies: Map<number, Enemy> = new Map();
   readonly aoi: AOIManager;
+  readonly spawner: Spawner;
   readonly obstacles: Obstacle[];
   readonly obstacleGrid: ObstacleGrid;
+  weather: WeatherState;
+  private weatherTimer: ReturnType<typeof setInterval> | null = null;
   private timer: GameTimer;
   readonly movement: MovementSystem;
   readonly chat: ChatSystem;
   readonly combat: CombatSystem;
+  readonly enemyAI: EnemyAISystem;
 
   constructor() {
     this.aoi = new AOIManager(
@@ -26,40 +38,107 @@ export class GameWorld {
       GameConfig.MAP_HEIGHT
     );
 
-    this.obstacles = generateObstacles({
-      mapWidth: GameConfig.MAP_WIDTH,
-      mapHeight: GameConfig.MAP_HEIGHT,
-      seed: GameConfig.OBSTACLE_SEED,
-      gap: GameConfig.OBSTACLE_GAP,
-      tree: {
-        count: GameConfig.TREE_COUNT,
-        minSize: GameConfig.TREE_MIN_SIZE,
-        maxSize: GameConfig.TREE_MAX_SIZE,
-        trunkRatio: GameConfig.TREE_TRUNK_RATIO,
-      },
-      rock: {
-        count: GameConfig.ROCK_COUNT,
-        minRadius: GameConfig.ROCK_MIN_RADIUS,
-        maxRadius: GameConfig.ROCK_MAX_RADIUS,
-      },
-    });
+    // 统一物件生成:注册各类定义,启动时一次性生成 static 物件(障碍物)
+    this.spawner = new Spawner(GameConfig.MAP_WIDTH, GameConfig.MAP_HEIGHT)
+      .register(
+        obstacleDefinition({
+          seed: GameConfig.OBSTACLE_SEED,
+          gap: GameConfig.OBSTACLE_GAP,
+          tree: {
+            count: GameConfig.TREE_COUNT,
+            minSize: GameConfig.TREE_MIN_SIZE,
+            maxSize: GameConfig.TREE_MAX_SIZE,
+            trunkRatio: GameConfig.TREE_TRUNK_RATIO,
+          },
+          rock: {
+            count: GameConfig.ROCK_COUNT,
+            minRadius: GameConfig.ROCK_MIN_RADIUS,
+            maxRadius: GameConfig.ROCK_MAX_RADIUS,
+          },
+        })
+      )
+      .register(
+        weatherDefinition({
+          kinds: GameConfig.WEATHER_KINDS,
+          minIntensity: GameConfig.WEATHER_MIN_INTENSITY,
+          maxIntensity: GameConfig.WEATHER_MAX_INTENSITY,
+        })
+      )
+      // 敌人/物品:骨架已注册但 count=0,不产出实体(扩展见 src/spawn/definitions/*)
+      .register(
+        enemyDefinition({
+          count: GameConfig.ENEMY_COUNT,
+          gap: GameConfig.ENEMY_GAP,
+          radius: GameConfig.ENEMY_RADIUS,
+          hp: GameConfig.ENEMY_HP,
+          speed: GameConfig.ENEMY_SPEED,
+          kinds: GameConfig.ENEMY_KINDS,
+        })
+      )
+      .register(
+        itemDefinition({
+          count: GameConfig.ITEM_COUNT,
+          gap: GameConfig.ITEM_GAP,
+          radius: GameConfig.ITEM_RADIUS,
+          value: GameConfig.ITEM_VALUE,
+          kinds: GameConfig.ITEM_KINDS,
+        })
+      );
+
+    const spawned = this.spawner.generateStatic(GameConfig.OBSTACLE_SEED);
+    this.obstacles = (spawned.get('obstacle') as ObstacleSpawn[] | undefined) ?? [];
     this.obstacleGrid = new ObstacleGrid(this.obstacles, GameConfig.OBSTACLE_GRID_CELL_SIZE);
+
+    // 初始天气(dynamic:运行时随机,服务端权威)
+    this.weather = this.rollWeather();
 
     this.movement = new MovementSystem(this);
     this.chat = new ChatSystem(this);
     this.combat = new CombatSystem(this);
+    this.enemyAI = new EnemyAISystem(this);
+
+    // Spawn enemies (dynamic, avoids obstacles via shared occupied list)
+    const enemySpawns = this.spawner.generateDynamic('enemy') as EnemySpawn[];
+    for (const spawn of enemySpawns) {
+      const kind = (spawn.kind as EnemyKind) ?? 'slime';
+      const enemy = new Enemy(kind, spawn.x, spawn.y);
+      this.enemies.set(enemy.id, enemy);
+    }
 
     this.timer = new GameTimer(GameConfig.TICK_RATE, (dt) => this.tick(dt));
   }
 
   start(): void {
     this.timer.start();
-    logger.info(`GameWorld started | tick rate: ${GameConfig.TICK_RATE}Hz | map: ${GameConfig.MAP_WIDTH}x${GameConfig.MAP_HEIGHT} | obstacles: ${this.obstacles.length}`);
+    // 天气定时重掷 + 广播(dynamic 生成的运行时驱动)
+    this.weatherTimer = setInterval(() => {
+      this.weather = this.rollWeather();
+      this.broadcastWeather();
+    }, GameConfig.WEATHER_CHANGE_INTERVAL);
+    logger.info(`GameWorld started | tick rate: ${GameConfig.TICK_RATE}Hz | map: ${GameConfig.MAP_WIDTH}x${GameConfig.MAP_HEIGHT} | obstacles: ${this.obstacles.length} | enemies: ${this.enemies.size} | weather: ${this.weather.kind}`);
   }
 
   stop(): void {
     this.timer.stop();
+    if (this.weatherTimer) {
+      clearInterval(this.weatherTimer);
+      this.weatherTimer = null;
+    }
     logger.info('GameWorld stopped');
+  }
+
+  /** 用 dynamic 定义重掷一次全局天气 */
+  private rollWeather(): WeatherState {
+    const [w] = this.spawner.generateDynamic('weather') as WeatherState[];
+    return w ?? { id: 0, category: 'weather', kind: 'clear', intensity: 0 };
+  }
+
+  /** 把当前天气广播给所有在线玩家(服务端权威 → 多端一致) */
+  private broadcastWeather(): void {
+    for (const player of this.players.values()) {
+      player.session.send(MsgType.WEATHER, this.weather);
+    }
+    logger.info(`Weather → ${this.weather.kind} (intensity ${this.weather.intensity.toFixed(2)})`);
   }
 
   addPlayer(player: Player): void {
@@ -77,6 +156,8 @@ export class GameWorld {
       mapWidth: GameConfig.MAP_WIDTH,
       mapHeight: GameConfig.MAP_HEIGHT,
       obstacles: this.obstacles,
+      enemies: [...this.enemies.values()].map(e => e.toPublicState()),
+      weather: this.weather,
     });
 
     // 通知附近玩家有新人加入
@@ -114,11 +195,17 @@ export class GameWorld {
       this.movement.update(player, dt);
     }
 
+    // 更新敌人 AI
+    this.enemyAI.update(dt);
+
     // 广播状态更新给各自视野内的玩家
     this.broadcastStates();
   }
 
   private broadcastStates(): void {
+    // Build enemy state snapshot once (same for all players)
+    const enemyStates = [...this.enemies.values()].map(e => e.toPublicState());
+
     for (const player of this.players.values()) {
       const nearby = this.aoi.getNearbyPlayers(player);
       const newVisible = new Set<number>();
@@ -145,12 +232,12 @@ export class GameWorld {
 
       player.visiblePlayers = newVisible;
 
-      player.session.send(MsgType.STATE_UPDATE, { players: states });
+      player.session.send(MsgType.STATE_UPDATE, { players: states, enemies: enemyStates });
     }
   }
 
-  /** 拒绝采样找一个不与任何障碍物重叠的出生点 */
-  private findSafeSpawn(radius: number): { x: number; y: number } {
+  /** 拒绝采样找一个不与任何障碍物重叠的出生点(出生 / 复活共用) */
+  findSafeSpawn(radius: number): { x: number; y: number } {
     for (let i = 0; i < 30; i++) {
       const x = Math.random() * GameConfig.MAP_WIDTH * 0.8 + GameConfig.MAP_WIDTH * 0.1;
       const y = Math.random() * GameConfig.MAP_HEIGHT * 0.8 + GameConfig.MAP_HEIGHT * 0.1;

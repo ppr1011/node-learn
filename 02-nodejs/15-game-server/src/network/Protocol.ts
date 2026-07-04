@@ -15,8 +15,13 @@ export enum MsgType {
   DAMAGE = 's_damage',
   PLAYER_DEAD = 's_dead',
   PLAYER_RESPAWN = 's_respawn',
+  WEATHER = 's_weather',
   PONG = 's_pong',
   ERROR = 's_error',
+
+  // Enemy events
+  ENEMY_HIT = 's_enemy_hit',
+  ENEMY_DEAD = 's_enemy_dead',
 }
 
 export interface GameMessage {
