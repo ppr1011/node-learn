@@ -17,6 +17,7 @@ import { logger } from '../utils/Logger';
 import { MsgType } from '../network/Protocol';
 import { WeaponDrop } from './WeaponDrop';
 import { rollWeaponDrop } from './Weapon';
+import { PlayerStore } from './PlayerStore';
 
 /** 击杀不同敌人的掉落幸运系数(越高越易出稀有/史诗) */
 const DROP_LUCK: Record<string, number> = { slime: 0.8, skeleton: 1.1, demon: 1.7 };
@@ -25,6 +26,7 @@ export class GameWorld {
   readonly players: Map<number, Player> = new Map();
   readonly enemies: Map<number, Enemy> = new Map();
   readonly drops: Map<number, WeaponDrop> = new Map();
+  readonly playerStore: PlayerStore = new PlayerStore(); // 角色存档:掉线重连恢复位置/装备
   readonly aoi: AOIManager;
   readonly spawner: Spawner;
   readonly obstacles: Obstacle[];
@@ -148,16 +150,28 @@ export class GameWorld {
   }
 
   addPlayer(player: Player): void {
-    // 随机生成出生点(避开障碍物)
-    player.position = this.findSafeSpawn(player.radius);
+    // 有存档(掉线重连 / 换标签页)→ 恢复上次位置、血量、装备;否则随机安全出生点
+    const saved = this.playerStore.get(player.token);
+    if (saved) {
+      player.position = { x: saved.x, y: saved.y };
+      player.hp = saved.hp;
+      player.maxHp = saved.maxHp;
+      player.facing = saved.facing;
+      player.isDead = false;
+      player.equip(saved.weapon);
+      logger.info(`Player "${player.name}" restored @ (${Math.round(saved.x)}, ${Math.round(saved.y)}) with ${saved.weapon}`);
+    } else {
+      player.position = this.findSafeSpawn(player.radius);
+    }
 
     this.players.set(player.id, player);
     this.aoi.addPlayer(player);
 
-    // 通知新玩家当前世界状态
+    // 通知新玩家当前世界状态(回传 token:首次注册时是服务端新生成的,供客户端本地记住角色)
     const nearby = this.aoi.getNearbyPlayers(player);
     player.session.send(MsgType.JOIN_WORLD, {
       self: player.toPublicState(),
+      token: player.token,
       players: nearby.map(p => p.toPublicState()),
       mapWidth: GameConfig.MAP_WIDTH,
       mapHeight: GameConfig.MAP_HEIGHT,
@@ -178,6 +192,9 @@ export class GameWorld {
   }
 
   removePlayer(player: Player): void {
+    // 离线前先存档:下次带同一 token 重连即可恢复(全局共享世界中的个人进度)
+    this.playerStore.save(player);
+
     this.aoi.removePlayer(player);
     this.players.delete(player.id);
 

@@ -170,6 +170,22 @@
       font-size: 10px;
       letter-spacing: 1px;
     }
+    #remember-hint {
+      display: none;
+      margin-top: 16px;
+      font-size: 11px;
+      color: #4ecca3;
+      line-height: 1.7;
+    }
+    #remember-hint #remember-name { font-weight: bold; color: #ffe066; }
+    #remember-hint .rh-sub { color: #557; }
+    #remember-hint #reset-char {
+      color: #e94560;
+      text-decoration: none;
+      margin-left: 6px;
+      border-bottom: 1px dashed rgba(233,69,96,0.5);
+    }
+    #remember-hint #reset-char:hover { color: #ff6b81; }
   </style>
 </head>
 <body>
@@ -202,6 +218,11 @@
       <div class="subtitle">▸ ONLINE ADVENTURE ◂</div>
       <input id="name-input" placeholder="输入你的名字" maxlength="16" />
       <button id="join-btn">▶ 进入游戏</button>
+      <div id="remember-hint">
+        ⟳ 上次的角色 · <span id="remember-name"></span><br>
+        <span class="rh-sub">将恢复上次的位置与装备</span>
+        <a id="reset-char" href="#">重置角色</a>
+      </div>
       <p>WASD 移动 · SPACE 攻击 · ENTER 聊天</p>
     </div>
   </div>
@@ -213,6 +234,13 @@
     // ─── State ────────────────────────────────────────────────
     let ws = null;
     let myId = null;
+    // 角色身份持久化:token 长期保存在 localStorage,作为跨会话的稳定角色标识;
+    // name 记住上次角色名。掉线后带 token 重连 → 服务端恢复位置/血量/装备。
+    let myToken = localStorage.getItem('mmo_token') || null;
+    let currentName = localStorage.getItem('mmo_name') || '';
+    let pingInterval = null;
+    let reconnectTimer = null;
+    let reconnectAttempts = 0;
     let players = {};
     let mapWidth = 3000;
     let mapHeight = 2000;
@@ -250,6 +278,9 @@
     const loginOverlay = document.getElementById('login-overlay');
     const nameInput  = document.getElementById('name-input');
     const joinBtn    = document.getElementById('join-btn');
+    const rememberHint = document.getElementById('remember-hint');
+    const rememberName = document.getElementById('remember-name');
+    const resetCharBtn = document.getElementById('reset-char');
 
     // ─── Resize ──────────────────────────────────────────────
     function resize() {
@@ -292,9 +323,38 @@
       }
     }
 
-    // ─── Login ───────────────────────────────────────────────
+    // ─── Login / 角色注册 ─────────────────────────────────────
+    // 本地已记住角色 → 预填名字、展示「继续冒险」;否则视为首次注册
+    function initLogin() {
+      if (myToken && currentName) {
+        nameInput.value = currentName;
+        rememberName.textContent = currentName;
+        rememberHint.style.display = 'block';
+        joinBtn.textContent = '▶ 继续冒险';
+      } else {
+        rememberHint.style.display = 'none';
+        joinBtn.textContent = '▶ 进入游戏';
+      }
+    }
+    initLogin();
+
+    // 重置角色:清掉本地身份,下次进入即注册全新角色(服务端会分配新 token)
+    resetCharBtn.onclick = e => {
+      e.preventDefault();
+      localStorage.removeItem('mmo_token');
+      localStorage.removeItem('mmo_name');
+      myToken = null;
+      currentName = '';
+      nameInput.value = '';
+      initLogin();
+      nameInput.focus();
+    };
+
     joinBtn.onclick = () => {
       const name = nameInput.value.trim() || 'Hero';
+      currentName = name;
+      localStorage.setItem('mmo_name', name);
+      reconnectAttempts = 0;
       connect(name);
       loginOverlay.style.display = 'none';
     };
@@ -309,7 +369,8 @@
       ws.onopen = () => {
         connected = true;
         statusEl.textContent = '● CONNECTED';
-        ws.send(JSON.stringify({ type: 'join', data: { name } }));
+        // 带上本地 token:老角色 → 服务端恢复存档;首次注册 token=null,服务端生成后回传
+        ws.send(JSON.stringify({ type: 'join', data: { name, token: myToken } }));
         startPing();
       };
 
@@ -320,18 +381,44 @@
       ws.onclose = () => {
         connected = false;
         statusEl.textContent = '○ DISCONNECTED';
-        addSysMsg('与服务器断开连接');
+        scheduleReconnect();
       };
 
       ws.onerror = () => { statusEl.textContent = '✕ ERROR'; };
+    }
+
+    // 掉线自动重连:带同一 token 回到共享世界,服务端把角色恢复到掉线前的位置
+    function scheduleReconnect() {
+      if (reconnectTimer || !currentName) return;
+      reconnectAttempts++;
+      if (reconnectAttempts > 30) {
+        addSysMsg('重连失败,请刷新页面重试');
+        statusEl.textContent = '○ OFFLINE';
+        return;
+      }
+      const delay = Math.min(5000, 1000 * reconnectAttempts);
+      addSysMsg(`与服务器断开,${(delay / 1000)}s 后尝试重连 (#${reconnectAttempts})...`);
+      statusEl.textContent = `↻ RECONNECTING (${reconnectAttempts})`;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect(currentName);
+      }, delay);
     }
 
     function handleMessage(msg) {
       switch (msg.type) {
         case 's_join':
           myId = msg.data.self.id;
+          // 记住服务端回传的角色 token(首次注册即在此落地本地存储)
+          if (msg.data.token) {
+            myToken = msg.data.token;
+            localStorage.setItem('mmo_token', myToken);
+            localStorage.setItem('mmo_name', msg.data.self.name || currentName);
+          }
+          reconnectAttempts = 0;
           mapWidth  = msg.data.mapWidth;
           mapHeight = msg.data.mapHeight;
+          players = {};   // 清空旧快照:重连时避免残留其他玩家的「幽灵」
           players[myId] = msg.data.self;
           for (const p of msg.data.players) players[p.id] = p;
           obstacles = msg.data.obstacles || [];
@@ -580,7 +667,8 @@
     setInterval(sendInput, 50);
 
     function startPing() {
-      setInterval(() => {
+      if (pingInterval) clearInterval(pingInterval); // 重连时避免叠加多个心跳定时器
+      pingInterval = setInterval(() => {
         if (ws && connected) {
           pingTime = Date.now();
           ws.send(JSON.stringify({ type: 'c_ping', data: { time: pingTime } }));

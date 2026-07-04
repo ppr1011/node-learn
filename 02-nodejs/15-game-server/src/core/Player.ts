@@ -5,6 +5,7 @@ import { WeaponKind, WEAPONS } from './Weapon';
 
 export class Player extends Entity {
   readonly name: string;
+  readonly token: string; // 稳定角色身份(客户端本地保存),用于掉线重连恢复存档
   session: Session;
   hp: number = 100;
   maxHp: number = 100;
@@ -26,10 +27,11 @@ export class Player extends Entity {
   aoiCellY: number = -1;
   visiblePlayers: Set<number> = new Set();
 
-  constructor(name: string, session: Session) {
+  constructor(name: string, session: Session, token: string) {
     super();
     this.name = name;
     this.session = session;
+    this.token = token;
   }
 
   canAttack(): boolean {

@@ -69,6 +69,10 @@ export class GameWebSocketServer {
     const player = this.playerBySession.get(sessionId);
 
     switch (msg.type) {
+      case MsgType.C_JOIN:
+        if (!player) this.handleJoin(sessionId, session, msg.data);
+        break;
+
       case MsgType.C_PING:
         session.send(MsgType.PONG, { time: msg.data?.time });
         break;
@@ -111,9 +115,31 @@ export class GameWebSocketServer {
 
   private handleJoin(sessionId: string, session: Session, data: any): void {
     const name = (data?.name || `Player_${this.nextSessionId}`).slice(0, 16);
-    const player = new Player(name, session);
+
+    // token = 稳定角色身份:客户端带来则沿用(恢复存档),否则服务端新生成并随 JOIN_WORLD 回传
+    let token = typeof data?.token === 'string' && data.token.length >= 8 ? data.token : '';
+    if (!token) token = this.world.playerStore.newToken();
+
+    // 同一角色重复登录(重连竞态 / 多标签页):踢掉旧连接,先存档再让新连接恢复,避免分身
+    this.kickExisting(token, sessionId);
+
+    const player = new Player(name, session, token);
     this.playerBySession.set(sessionId, player);
     this.world.addPlayer(player);
+  }
+
+  /** 若某 token 已有在线连接,断开旧连接(其状态会在 removePlayer 时存档) */
+  private kickExisting(token: string, keepSessionId: string): void {
+    for (const [oldSid, oldPlayer] of this.playerBySession) {
+      if (oldSid === keepSessionId || oldPlayer.token !== token) continue;
+      logger.warn(`Duplicate login for token ${token.slice(0, 8)}…, kicking session ${oldSid}`);
+      const oldSession = this.sessions.get(oldSid);
+      this.world.removePlayer(oldPlayer); // 存档 + 从世界移除
+      this.playerBySession.delete(oldSid);
+      oldSession?.send(MsgType.ERROR, { msg: '角色已在其他窗口登录' });
+      oldSession?.close();
+      this.sessions.delete(oldSid);
+    }
   }
 
   private handleDisconnect(sessionId: string): void {

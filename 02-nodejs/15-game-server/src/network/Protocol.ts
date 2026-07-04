@@ -1,5 +1,6 @@
 export enum MsgType {
   // Client -> Server
+  C_JOIN = 'join', // 进入世界:{ name, token? };token 为空则服务端生成并回传
   C_MOVE = 'c_move',
   C_STOP = 'c_stop',
   C_CHAT = 'c_chat',
