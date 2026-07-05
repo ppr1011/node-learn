@@ -2,6 +2,7 @@ import { Entity } from './Entity';
 import { Session } from '../network/Session';
 import { GameConfig } from '../config';
 import { WeaponKind, WEAPONS } from './Weapon';
+import { ExplorationMap } from './ExplorationMap';
 
 export class Player extends Entity {
   readonly name: string;
@@ -26,6 +27,9 @@ export class Player extends Entity {
   aoiCellX: number = -1;
   aoiCellY: number = -1;
   visiblePlayers: Set<number> = new Set();
+
+  // 迷雾探索
+  exploration: ExplorationMap = new ExplorationMap();
 
   constructor(name: string, session: Session, token: string) {
     super();

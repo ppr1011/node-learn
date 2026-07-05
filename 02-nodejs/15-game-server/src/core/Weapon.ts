@@ -21,8 +21,8 @@ export interface WeaponStats {
 }
 
 export const WEAPONS: Record<WeaponKind, WeaponStats> = {
-  // 默认徒手:与旧版写死值一致,不参与掉落
-  fist: { label: '徒手', damage: 10, range: 80, cooldown: 1000, rarity: 'common', dropWeight: 0 },
+  // 默认徒手(挥拳):作为起手武器需能拿下第一杀,故适当增强(伤害/出手速度/距离)
+  fist: { label: '徒手', damage: 14, range: 90, cooldown: 600, rarity: 'common', dropWeight: 0 },
   dagger: { label: '匕首', damage: 12, range: 70, cooldown: 450, rarity: 'common', dropWeight: 30 },
   sword: { label: '铁剑', damage: 20, range: 105, cooldown: 800, rarity: 'common', dropWeight: 26 },
   greatsword: { label: '巨剑', damage: 30, range: 120, cooldown: 1250, rarity: 'rare', dropWeight: 14 },

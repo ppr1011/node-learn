@@ -18,6 +18,7 @@ import { MsgType } from '../network/Protocol';
 import { WeaponDrop } from './WeaponDrop';
 import { rollWeaponDrop } from './Weapon';
 import { PlayerStore } from './PlayerStore';
+import { ExplorationMap } from './ExplorationMap';
 
 /** 击杀不同敌人的掉落幸运系数(越高越易出稀有/史诗) */
 const DROP_LUCK: Record<string, number> = { slime: 0.8, skeleton: 1.1, demon: 1.7 };
@@ -150,7 +151,7 @@ export class GameWorld {
   }
 
   addPlayer(player: Player): void {
-    // 有存档(掉线重连 / 换标签页)→ 恢复上次位置、血量、装备;否则随机安全出生点
+    // 有存档(掉线重连 / 换标签页)→ 恢复上次位置、血量、装备、探索进度;否则随机安全出生点
     const saved = this.playerStore.get(player.token);
     if (saved) {
       player.position = { x: saved.x, y: saved.y };
@@ -159,9 +160,16 @@ export class GameWorld {
       player.facing = saved.facing;
       player.isDead = false;
       player.equip(saved.weapon);
+      if (saved.explored) {
+        player.exploration = ExplorationMap.fromBase64(
+          saved.explored, player.exploration.cols, player.exploration.rows
+        );
+      }
       logger.info(`Player "${player.name}" restored @ (${Math.round(saved.x)}, ${Math.round(saved.y)}) with ${saved.weapon}`);
     } else {
       player.position = this.findSafeSpawn(player.radius);
+      // 新玩家:预揭开出生点附近区域
+      player.exploration.reveal(player.position.x, player.position.y, GameConfig.FOG_REVEAL_RADIUS);
     }
 
     this.players.set(player.id, player);
@@ -179,6 +187,13 @@ export class GameWorld {
       enemies: [...this.enemies.values()].map(e => e.toPublicState()),
       drops: [...this.drops.values()].map(d => d.toPublicState()),
       weather: this.weather,
+      fogGrid: {
+        cols: player.exploration.cols,
+        rows: player.exploration.rows,
+        cellSize: GameConfig.FOG_CELL_SIZE,
+        revealRadius: GameConfig.FOG_REVEAL_RADIUS,
+        explored: player.exploration.toBase64(),
+      },
     });
 
     // 通知附近玩家有新人加入
@@ -213,10 +228,13 @@ export class GameWorld {
   private tick(deltaMs: number): void {
     const dt = deltaMs / 1000;
 
-    // 更新所有玩家的移动
+    // 更新所有玩家的移动 + 揭雾
     for (const player of this.players.values()) {
       if (player.isDead) continue;
       this.movement.update(player, dt);
+      player.exploration.reveal(
+        player.position.x, player.position.y, GameConfig.FOG_REVEAL_RADIUS
+      );
     }
 
     // 更新敌人 AI
@@ -239,7 +257,10 @@ export class GameWorld {
     if (Math.random() >= GameConfig.WEAPON_DROP_CHANCE) return;
     const luck = DROP_LUCK[enemy.kind] ?? 1;
     const kind = rollWeaponDrop(luck);
-    const drop = new WeaponDrop(kind, enemy.position.x, enemy.position.y, GameConfig.WEAPON_DROP_TTL);
+    const drop = new WeaponDrop(
+      kind, enemy.position.x, enemy.position.y,
+      GameConfig.WEAPON_DROP_TTL, GameConfig.WEAPON_PICKUP_GRACE
+    );
     this.drops.set(drop.id, drop);
     this.broadcastAll(MsgType.ITEM_SPAWN, drop.toPublicState());
   }
@@ -254,6 +275,8 @@ export class GameWorld {
         this.broadcastAll(MsgType.ITEM_PICKUP, { dropId: drop.id, byPlayerId: null });
         continue;
       }
+      // 拾取宽限期内:先让掉落物在地上可见,暂不允许拾取
+      if (now < drop.pickableAt) continue;
       // 拾取判定:命中最近的一名存活玩家即被其装备
       for (const player of this.players.values()) {
         if (player.isDead) continue;

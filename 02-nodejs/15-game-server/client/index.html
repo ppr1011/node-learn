@@ -2,9 +2,19 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>MMO-Lite</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      /* 移动端:禁止双击缩放、下拉刷新、长按选中/callout,消除触屏交互干扰 */
+      touch-action: none;
+      overscroll-behavior: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-touch-callout: none;
+    }
     body {
       background: #0a0a15;
       color: #eee;
@@ -12,8 +22,13 @@
       display: flex;
       flex-direction: column;
       height: 100vh;
+      height: 100dvh;          /* 动态视口高度:规避移动端地址栏收放导致的高度跳变 */
       overflow: hidden;
     }
+    /* 仅触屏设备显示的元素(移动摇杆/按钮/抽屉开关);默认隐藏,body.touch 时启用 */
+    .touch-only { display: none; }
+    body.touch #touch-ui { display: block; }        /* 摇杆/攻击层:任何触屏设备都显示 */
+    body.touch #drawer-toggle { display: inline-flex; }
     #header {
       padding: 6px 16px;
       background: rgba(8, 12, 24, 0.95);
@@ -186,12 +201,123 @@
       border-bottom: 1px dashed rgba(233,69,96,0.5);
     }
     #remember-hint #reset-char:hover { color: #ff6b81; }
+
+    /* ═══ 移动端 / 触屏支持 ═══════════════════════════════════════════ */
+    /* 顶栏抽屉开关按钮(汉堡):打开右侧聊天/信息抽屉 */
+    #drawer-toggle {
+      background: none;
+      border: 1px solid #2a5a8a;
+      color: #4ecca3;
+      border-radius: 5px;
+      padding: 3px 9px;
+      font-size: 15px;
+      cursor: pointer;
+      line-height: 1;
+      font-family: inherit;
+      margin-left: 10px;
+    }
+    #drawer-toggle:active { background: rgba(78,204,163,0.15); }
+
+    /* 窄屏(手机/竖屏平板):侧栏改为从右侧滑入的浮层抽屉 */
+    @media (max-width: 820px) {
+      #header { padding: 8px 12px; }
+      #header .stats { font-size: 10px; }
+      #sidebar {
+        position: fixed;
+        top: 0; right: 0;
+        height: 100dvh;
+        width: min(300px, 84vw);
+        transform: translateX(100%);
+        transition: transform 0.25s ease;
+        z-index: 60;
+        box-shadow: -8px 0 30px rgba(0,0,0,0.5);
+      }
+      #sidebar.open { transform: translateX(0); }
+      /* 抽屉遮罩:点击关闭(常驻但透明+不拦截,.open 时淡入) */
+      body.touch #drawer-scrim {
+        display: block;
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 55;
+        opacity: 0; pointer-events: none;
+        transition: opacity 0.25s ease;
+      }
+      #drawer-scrim.open { opacity: 1; pointer-events: auto; }
+      /* 摇杆/攻击键占据底部两侧,小地图缩小并移到左上,避免遮挡 */
+      #minimap { width: 108px; height: 74px; bottom: auto; top: 10px; left: 10px; }
+    }
+
+    /* ── 触屏控件容器:铺满屏幕,自身不拦截事件,子控件各自开启 ── */
+    #touch-ui {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      pointer-events: none;
+    }
+    /* ── 虚拟摇杆(左下) ─────────────────────────────────────────── */
+    #joystick {
+      position: absolute;
+      left: max(22px, env(safe-area-inset-left));
+      bottom: max(26px, env(safe-area-inset-bottom));
+      width: 128px; height: 128px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 50% 45%, rgba(78,204,163,0.10), rgba(10,20,40,0.28));
+      border: 1.5px solid rgba(78,204,163,0.35);
+      pointer-events: auto;
+      touch-action: none;
+    }
+    #joystick-thumb {
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 56px; height: 56px;
+      margin: -28px 0 0 -28px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 40% 35%, #4ecca3, #2a9a73);
+      border: 1.5px solid rgba(255,255,255,0.7);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+      will-change: transform;
+    }
+    /* ── 攻击键(右下) ────────────────────────────────────────────── */
+    #btn-attack {
+      position: absolute;
+      right: max(24px, env(safe-area-inset-right));
+      bottom: max(40px, env(safe-area-inset-bottom));
+      width: 92px; height: 92px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 42% 35%, #ff6b81, #c02036);
+      border: 2px solid rgba(255,255,255,0.55);
+      color: #fff;
+      font-family: inherit;
+      font-size: 15px; font-weight: bold;
+      letter-spacing: 1px;
+      pointer-events: auto;
+      touch-action: none;
+      box-shadow: 0 3px 14px rgba(0,0,0,0.45);
+      display: flex; align-items: center; justify-content: center;
+    }
+    #btn-attack.pressed { transform: scale(0.92); filter: brightness(1.15); }
+    /* 聊天小键:攻击键左上方 */
+    #btn-chat {
+      position: absolute;
+      right: max(128px, calc(env(safe-area-inset-right) + 104px));
+      bottom: max(64px, calc(env(safe-area-inset-bottom) + 24px));
+      width: 54px; height: 54px;
+      border-radius: 50%;
+      background: rgba(10,20,40,0.65);
+      border: 1.5px solid #2a5a8a;
+      color: #9fd; font-size: 20px;
+      pointer-events: auto;
+      touch-action: none;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #btn-chat:active { background: rgba(78,204,163,0.2); }
   </style>
 </head>
 <body>
   <div id="header">
     <span class="status" id="status">● CONNECTING</span>
     <span class="stats" id="stats"></span>
+    <button id="drawer-toggle" class="touch-only" aria-label="打开聊天">☰</button>
   </div>
   <div id="game-container">
     <canvas id="canvas"></canvas>
@@ -212,6 +338,16 @@
     </div>
   </div>
 
+  <!-- 抽屉遮罩(移动端点击关闭聊天侧栏) -->
+  <div id="drawer-scrim" class="touch-only"></div>
+
+  <!-- 触屏操作层:虚拟摇杆 + 攻击/聊天按钮(仅触屏设备显示) -->
+  <div id="touch-ui" class="touch-only">
+    <div id="joystick"><div id="joystick-thumb"></div></div>
+    <button id="btn-chat" aria-label="聊天">💬</button>
+    <button id="btn-attack">攻击</button>
+  </div>
+
   <div id="login-overlay">
     <div id="login-box">
       <h2>MMO-LITE</h2>
@@ -228,7 +364,9 @@
   </div>
 
   <script>
-    const WS_URL = 'ws://localhost:4000';
+    const WS_URL = (location.protocol === 'file:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+      ? 'ws://localhost:4000'
+      : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
     const ATTACK_RANGE = 80;
 
     // ─── State ────────────────────────────────────────────────
@@ -265,6 +403,14 @@
     // 天气视觉细节全部在客户端程序化生成(见文件末尾「Weather」章节),
     // 天然随 intensity 缩放,零资源依赖。分层粒子池 fx 亦在那里定义。
 
+    // ─── 迷雾探索(Fog of War) ────────────────────────────────
+    let fogCols = 0, fogRows = 0, fogCellSize = 100, fogRevealRadius = 400;
+    let fogExplored = null; // Uint8Array 位图
+    let fogCanvas = null;   // off-screen canvas
+    let fogCtx = null;
+    let fogDirty = true;
+    let lastFogCamX = -999, lastFogCamY = -999;
+
     // ─── DOM ─────────────────────────────────────────────────
     const canvas     = document.getElementById('canvas');
     const ctx        = canvas.getContext('2d');
@@ -281,6 +427,18 @@
     const rememberHint = document.getElementById('remember-hint');
     const rememberName = document.getElementById('remember-name');
     const resetCharBtn = document.getElementById('reset-char');
+    // 触屏控件
+    const touchUI      = document.getElementById('touch-ui');
+    const joyEl        = document.getElementById('joystick');
+    const joyThumb     = document.getElementById('joystick-thumb');
+    const btnAttack    = document.getElementById('btn-attack');
+    const btnChat      = document.getElementById('btn-chat');
+    const drawerToggle = document.getElementById('drawer-toggle');
+    const drawerScrim  = document.getElementById('drawer-scrim');
+    const sidebarEl    = document.getElementById('sidebar');
+
+    // 摇杆输出的方向向量(active 时覆盖键盘输入);服务端会归一化,故 dx/dy 传原始分量即可
+    const joy = { active: false, dx: 0, dy: 0 };
 
     // ─── Resize ──────────────────────────────────────────────
     function resize() {
@@ -303,8 +461,11 @@
     // 客户端这里只生成不参与碰撞的纯装饰物:灌木、花。
     function generateMap() {
       mapObjects = [];
+      const areaScale = (mapWidth * mapHeight) / (3000 * 2000);
+      const bushCount = Math.floor(80 * areaScale);
+      const flowerCount = Math.floor(200 * areaScale);
       // Bushes
-      for (let i = 0; i < 80; i++) {
+      for (let i = 0; i < bushCount; i++) {
         mapObjects.push({
           type: 'bush',
           x: srand(i * 11 + 400) * mapWidth,
@@ -313,7 +474,7 @@
         });
       }
       // Flowers (tiny)
-      for (let i = 0; i < 200; i++) {
+      for (let i = 0; i < flowerCount; i++) {
         mapObjects.push({
           type: 'flower',
           x: srand(i * 5 + 600) * mapWidth,
@@ -321,6 +482,113 @@
           color: ['#ff9966','#ffcc66','#ff66aa','#aaaaff','#ffffff'][Math.floor(srand(i * 5 + 602) * 5)],
         });
       }
+    }
+
+    // ─── Fog of War (迷雾探索) ─────────────────────────────────
+    function isFogBitSet(col, row) {
+      const idx = row * fogCols + col;
+      return (fogExplored[idx >> 3] & (1 << (idx & 7))) !== 0;
+    }
+    function setFogBit(col, row) {
+      const idx = row * fogCols + col;
+      fogExplored[idx >> 3] |= 1 << (idx & 7);
+    }
+
+    function initFogOfWar(data) {
+      fogCols = data.cols;
+      fogRows = data.rows;
+      fogCellSize = data.cellSize;
+      fogRevealRadius = data.revealRadius || 400;
+      fogExplored = new Uint8Array(Math.ceil((fogCols * fogRows) / 8));
+      // 解码 base64
+      const bin = atob(data.explored);
+      for (let i = 0; i < bin.length && i < fogExplored.length; i++) {
+        fogExplored[i] = bin.charCodeAt(i);
+      }
+      fogCanvas = document.createElement('canvas');
+      fogCtx = fogCanvas.getContext('2d');
+      fogDirty = true;
+    }
+
+    function fogRevealAround(wx, wy) {
+      if (!fogExplored) return;
+      const centerCol = Math.floor(wx / fogCellSize);
+      const centerRow = Math.floor(wy / fogCellSize);
+      const cellR = Math.ceil(fogRevealRadius / fogCellSize);
+      const rSq = fogRevealRadius * fogRevealRadius;
+      for (let dr = -cellR; dr <= cellR; dr++) {
+        for (let dc = -cellR; dc <= cellR; dc++) {
+          const col = centerCol + dc, row = centerRow + dr;
+          if (col < 0 || col >= fogCols || row < 0 || row >= fogRows) continue;
+          if (isFogBitSet(col, row)) continue;
+          const cx = col * fogCellSize + fogCellSize / 2;
+          const cy = row * fogCellSize + fogCellSize / 2;
+          const dx = cx - wx, dy = cy - wy;
+          if (dx * dx + dy * dy <= rSq) {
+            setFogBit(col, row);
+            fogDirty = true;
+          }
+        }
+      }
+    }
+
+    function drawWarFog(W, H) {
+      if (!fogExplored) return;
+      const me = players[myId];
+      if (me) fogRevealAround(me.targetX ?? me.x, me.targetY ?? me.y);
+
+      // 仅在相机移动或格子变化时重绘 off-screen canvas
+      if (fogDirty || Math.abs(camera.x - lastFogCamX) > 3 || Math.abs(camera.y - lastFogCamY) > 3) {
+        fogCanvas.width = W;
+        fogCanvas.height = H;
+
+        // 全屏黑色遮罩
+        fogCtx.fillStyle = 'rgba(0,0,0,0.95)';
+        fogCtx.fillRect(0, 0, W, H);
+
+        // 用 destination-out 为已探索区域"挖洞"
+        fogCtx.globalCompositeOperation = 'destination-out';
+
+        const startCol = Math.max(0, Math.floor(camera.x / fogCellSize) - 1);
+        const endCol = Math.min(fogCols - 1, Math.floor((camera.x + W) / fogCellSize) + 1);
+        const startRow = Math.max(0, Math.floor(camera.y / fogCellSize) - 1);
+        const endRow = Math.min(fogRows - 1, Math.floor((camera.y + H) / fogCellSize) + 1);
+
+        for (let row = startRow; row <= endRow; row++) {
+          for (let col = startCol; col <= endCol; col++) {
+            if (!isFogBitSet(col, row)) continue;
+            const sx = col * fogCellSize + fogCellSize / 2 - camera.x;
+            const sy = row * fogCellSize + fogCellSize / 2 - camera.y;
+            const r = fogCellSize * 0.72;
+            fogCtx.fillStyle = 'rgba(255,255,255,0.75)';
+            fogCtx.beginPath();
+            fogCtx.arc(sx, sy, r, 0, Math.PI * 2);
+            fogCtx.fill();
+          }
+        }
+
+        // 当前视野范围:完全透明(更亮的洞)
+        if (me) {
+          const px = (me.targetX ?? me.x) - camera.x;
+          const py = (me.targetY ?? me.y) - camera.y;
+          const vr = fogRevealRadius;
+          const vGrad = fogCtx.createRadialGradient(px, py, 0, px, py, vr);
+          vGrad.addColorStop(0, 'rgba(255,255,255,1)');
+          vGrad.addColorStop(0.7, 'rgba(255,255,255,1)');
+          vGrad.addColorStop(1, 'rgba(255,255,255,0)');
+          fogCtx.fillStyle = vGrad;
+          fogCtx.beginPath();
+          fogCtx.arc(px, py, vr, 0, Math.PI * 2);
+          fogCtx.fill();
+        }
+
+        fogCtx.globalCompositeOperation = 'source-over';
+        lastFogCamX = camera.x;
+        lastFogCamY = camera.y;
+        fogDirty = false;
+      }
+
+      ctx.drawImage(fogCanvas, 0, 0);
     }
 
     // ─── Login / 角色注册 ─────────────────────────────────────
@@ -375,7 +643,7 @@
       };
 
       ws.onmessage = e => {
-        try { handleMessage(JSON.parse(e.data)); } catch {}
+        try { handleMessage(JSON.parse(e.data)); } catch (err) { console.error('[MSG ERR]', err); }
       };
 
       ws.onclose = () => {
@@ -429,6 +697,7 @@
           drops = {};
           if (msg.data.drops) for (const d of msg.data.drops) drops[d.id] = d;
           if (msg.data.weather) { weather = msg.data.weather; addSysMsg(`当前天气: ${weatherLabel(weather.kind)}`); }
+          if (msg.data.fogGrid) initFogOfWar(msg.data.fogGrid);
           addSysMsg(`进入了游戏世界 (${mapWidth}x${mapHeight})`);
           generateMap();
           break;
@@ -625,12 +894,17 @@
 
       if (e.key === ' ') {
         e.preventDefault();
-        if (ws && connected && myId) {
-          ws.send(JSON.stringify({ type: 'c_attack' }));
-          lastAttackAt = Date.now(); // 冷却环 HUD 估算(权威冷却仍在服务端);挥击动画由 s_attack 回声驱动
-        }
+        doAttack();
       }
     });
+
+    // 发起攻击(键盘 SPACE 与触屏攻击键共用);权威冷却在服务端,这里只更新 HUD 冷却环估算
+    function doAttack() {
+      if (ws && connected && myId) {
+        ws.send(JSON.stringify({ type: 'c_attack' }));
+        lastAttackAt = Date.now(); // 挥击动画由 s_attack 回声驱动
+      }
+    }
 
     // 客户端天气覆盖:非 null 时忽略服务端 s_weather,用于本地预览各类效果
     let weatherOverride = null;
@@ -652,10 +926,14 @@
       if (!ws || !connected || !myId) return;
       if (document.activeElement === chatInput) return;
       let dx = 0, dy = 0;
-      if (keys['w'] || keys['arrowup'])    dy -= 1;
-      if (keys['s'] || keys['arrowdown'])  dy += 1;
-      if (keys['a'] || keys['arrowleft'])  dx -= 1;
-      if (keys['d'] || keys['arrowright']) dx += 1;
+      if (joy.active) {                 // 触屏摇杆优先:直接使用其方向分量
+        dx = joy.dx; dy = joy.dy;
+      } else {
+        if (keys['w'] || keys['arrowup'])    dy -= 1;
+        if (keys['s'] || keys['arrowdown'])  dy += 1;
+        if (keys['a'] || keys['arrowleft'])  dx -= 1;
+        if (keys['d'] || keys['arrowright']) dx += 1;
+      }
       if (dx !== 0 || dy !== 0) {
         ws.send(JSON.stringify({ type: 'c_move', data: { dx, dy } }));
         if (players[myId]) players[myId]._moving = true;
@@ -665,6 +943,89 @@
       }
     }
     setInterval(sendInput, 50);
+
+    // ═══ 触屏 / 移动端操作 ══════════════════════════════════════════════
+    // 触屏设备:显示虚拟摇杆 + 攻击/聊天键,并把侧栏改为可滑出的抽屉
+    const IS_TOUCH = window.matchMedia('(pointer: coarse)').matches ||
+                     ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+    if (IS_TOUCH) {
+      document.body.classList.add('touch');   // .touch-only 控件的显示由 CSS 依此类接管
+      setupTouchControls();
+      // 把键盘操作提示替换为触屏说明
+      const loginHint = document.querySelector('#login-box p');
+      if (loginHint) loginHint.textContent = '左侧摇杆移动 · 右侧按钮攻击 · 💬 聊天';
+      const ctrlHint = document.getElementById('controls');
+      if (ctrlHint) ctrlHint.innerHTML =
+        '摇杆 · 移动 &nbsp; 攻击键 · 攻击(可长按连击)<br>' +
+        '💬 · 聊天 &nbsp; ☰ · 开关此面板<br>' +
+        '<span style="color:#4ecca3">击杀敌人掉落武器 · 走过即拾取装备</span>';
+    }
+
+    function setupTouchControls() {
+      // ── 虚拟摇杆:固定底座,拇指球随手指在半径内移动,输出归一化方向 ──
+      const MAX_R = 44;      // 拇指球可偏移的最大像素半径
+      const DEAD = 0.22;     // 死区:小于此比例视为静止,避免误触微移
+      let joyPid = null;     // 当前控制摇杆的 pointerId(支持与攻击键多指并发)
+
+      function updateJoy(clientX, clientY) {
+        const rect = joyEl.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        let ox = clientX - cx, oy = clientY - cy;
+        const mag = Math.hypot(ox, oy);
+        if (mag > MAX_R) { ox = ox / mag * MAX_R; oy = oy / mag * MAX_R; }
+        joyThumb.style.transform = `translate(${ox}px, ${oy}px)`;
+        const nx = ox / MAX_R, ny = oy / MAX_R;      // 归一化到 [-1,1]
+        if (Math.hypot(nx, ny) < DEAD) { joy.dx = 0; joy.dy = 0; }
+        else { joy.dx = nx; joy.dy = ny; }
+      }
+      function resetJoy() {
+        joy.active = false; joy.dx = 0; joy.dy = 0;
+        joyThumb.style.transform = 'translate(0px, 0px)';
+      }
+      joyEl.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        joyPid = e.pointerId;
+        joyEl.setPointerCapture(e.pointerId);
+        joy.active = true;
+        updateJoy(e.clientX, e.clientY);
+      });
+      joyEl.addEventListener('pointermove', e => {
+        if (e.pointerId === joyPid) updateJoy(e.clientX, e.clientY);
+      });
+      const endJoy = e => { if (e.pointerId === joyPid) { joyPid = null; resetJoy(); } };
+      joyEl.addEventListener('pointerup', endJoy);
+      joyEl.addEventListener('pointercancel', endJoy);
+
+      // ── 攻击键:按下即攻击,长按自动连击(权威冷却在服务端,连发无副作用) ──
+      let atkTimer = null;
+      const startAttack = e => {
+        e.preventDefault();
+        btnAttack.classList.add('pressed');
+        doAttack();
+        if (atkTimer) clearInterval(atkTimer);
+        atkTimer = setInterval(doAttack, 220);
+      };
+      const stopAttack = () => {
+        btnAttack.classList.remove('pressed');
+        if (atkTimer) { clearInterval(atkTimer); atkTimer = null; }
+      };
+      btnAttack.addEventListener('pointerdown', startAttack);
+      btnAttack.addEventListener('pointerup', stopAttack);
+      btnAttack.addEventListener('pointercancel', stopAttack);
+      btnAttack.addEventListener('pointerleave', stopAttack);
+
+      // ── 抽屉(聊天/信息侧栏)开关 ──
+      const openDrawer  = () => { sidebarEl.classList.add('open'); drawerScrim.classList.add('open'); };
+      const closeDrawer = () => { sidebarEl.classList.remove('open'); drawerScrim.classList.remove('open'); };
+      const toggleDrawer = () => sidebarEl.classList.contains('open') ? closeDrawer() : openDrawer();
+      drawerToggle.addEventListener('click', toggleDrawer);
+      drawerScrim.addEventListener('click', closeDrawer);
+      // 聊天键:打开抽屉并聚焦输入框(唤起系统软键盘)
+      btnChat.addEventListener('click', () => { openDrawer(); chatInput.focus(); });
+      // 发送后自动收起软键盘(chatInput 的 Enter 处理已 blur);发送完顺手关抽屉体验更顺
+      chatInput.addEventListener('blur', () => setTimeout(closeDrawer, 120));
+    }
 
     function startPing() {
       if (pingInterval) clearInterval(pingInterval); // 重连时避免叠加多个心跳定时器
@@ -1057,7 +1418,7 @@
     const RARITY_COLOR = { common: '#b5c6d6', rare: '#4ea3ff', epic: '#b06bff' };
     const RARITY_LABEL = { common: '普通', rare: '稀有', epic: '史诗' };
     const WEAPONS = {
-      fist:       { label: '徒手', rarity: 'common', cooldown: 1000, dur: 12, range: 80  },
+      fist:       { label: '徒手', rarity: 'common', cooldown: 600,  dur: 14, range: 90  },
       dagger:     { label: '匕首', rarity: 'common', cooldown: 450,  dur: 14, range: 70  },
       sword:      { label: '铁剑', rarity: 'common', cooldown: 800,  dur: 18, range: 105 },
       greatsword: { label: '巨剑', rarity: 'rare',   cooldown: 1250, dur: 26, range: 120 },
@@ -1114,6 +1475,13 @@
       ctx.restore();
     }
 
+    // ── 主角人物贴图(Kenney Tiny Dungeon 骑士 · CC0);缺文件回退圆圈 ──────
+    let _heroBad = false;
+    const _heroImg = new Image();
+    _heroImg.onerror = () => { _heroBad = true; };
+    _heroImg.src = 'assets/player/hero.png';
+    function loadHeroSprite() { return _heroBad ? null : _heroImg; }
+
     // ── 收到 s_attack:给攻击者挂一段挥击动画状态(所有客户端同步播放) ──────
     function triggerAttackAnim(data) {
       const p = players[data.attackerId];
@@ -1146,12 +1514,29 @@
       const pt = (ang, r) => [sx + Math.cos(ang) * r, sy + Math.sin(ang) * r];
       ctx.save(); ctx.lineCap = 'round';
 
-      if (a.weapon === 'fist') {                    // 徒手:扩散光环(旧行为)
-        const rr = 8 + t * (reach * 0.9);
-        ctx.strokeStyle = `rgba(255,220,80,${(1 - t) * 0.85})`; ctx.lineWidth = 2.5;
-        ctx.beginPath(); ctx.arc(sx, sy, rr, 0, Math.PI * 2); ctx.stroke();
-        ctx.strokeStyle = `rgba(255,180,40,${(1 - t) * 0.4})`; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.arc(sx, sy, rr * 0.55, 0, Math.PI * 2); ctx.stroke();
+      if (a.weapon === 'fist') {                    // 徒手:有方向的挥拳(出拳→收回)
+        const ext = Math.sin(Math.min(1, t) * Math.PI); // 0→1→0
+        const reachP = Math.min(reach, 60) * 0.7;
+        const bx = sx + Math.cos(dir) * 8, by = sy + Math.sin(dir) * 8;         // 肩/起手
+        const fx = sx + Math.cos(dir) * (8 + ext * reachP);                     // 拳头位置
+        const fy = sy + Math.sin(dir) * (8 + ext * reachP);
+        // 手臂
+        ctx.strokeStyle = `rgba(240,228,200,${0.45 + 0.45 * ext})`; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(fx, fy); ctx.stroke();
+        // 拳头
+        ctx.fillStyle = '#ffe6c0';
+        ctx.beginPath(); ctx.arc(fx, fy, 4.6, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(120,90,60,0.7)'; ctx.lineWidth = 1; ctx.stroke();
+        // 出拳到位:冲击弧 + 一次火花
+        if (ext > 0.72) {
+          ctx.strokeStyle = `rgba(255,236,150,${(ext - 0.72) * 3})`; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(fx, fy, 8, dir - 0.9, dir + 0.9); ctx.stroke();
+        }
+        if (!a.impacted && t >= 0.5) {
+          a.impacted = true;
+          const wx = p.x + Math.cos(dir) * reachP, wy = p.y + Math.sin(dir) * reachP;
+          spawnParticles(wx, wy, 5, { spdMin: 1, spdMax: 2.8, szMin: 1, szMax: 3, color: ['#ffe6a0', '#fff'], decay: 0.08 });
+        }
       } else if (a.weapon === 'dagger') {           // 匕首:两段快速短刺
         const pulse = Math.abs(Math.sin(t * Math.PI * 2));
         const [x0, y0] = pt(dir, 10), [x1, y1] = pt(dir, reach * (0.5 + 0.5 * pulse));
@@ -1336,27 +1721,39 @@
         ctx.beginPath(); ctx.arc(sx, sy, R * 2.8, 0, Math.PI * 2); ctx.fill();
       }
 
-      // Body gradient
-      const grad = ctx.createRadialGradient(sx - 4, sy - 4, 1, sx, sy, R);
-      grad.addColorStop(0, lighten(baseColor, 50));
-      grad.addColorStop(0.5, baseColor);
-      grad.addColorStop(1, lighten(baseColor, -30));
-      ctx.beginPath(); ctx.arc(sx, sy, R, 0, Math.PI * 2);
-      ctx.fillStyle = grad;
-      ctx.fill();
+      // Body:人物角色贴图(按朝向水平翻转;受击闪白);缺贴图回退圆圈
+      const hero = loadHeroSprite();
+      if (spriteOK(hero)) {
+        // 身份色圈:自身绿、他人按 id 取色,画在脚下椭圆环,替代原实心圆的配色区分
+        ctx.save();
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = isMe ? '#4ecca3' : pcolor(parseInt(id));
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.ellipse(sx, sy + R - 1, R * 0.72, R * 0.3, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
 
-      // Border
-      ctx.strokeStyle = isMe ? '#ffffff' : lighten(baseColor, 30);
-      ctx.lineWidth = isMe ? 2 : 1.5;
-      ctx.stroke();
-
-      // Inner detail ring
-      ctx.save();
-      ctx.globalAlpha = 0.25;
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.arc(sx, sy, R * 0.6, 0, Math.PI * 2); ctx.stroke();
-      ctx.restore();
+        const S = 30; // 16×16 → 放大到 30
+        const faceLeft = Math.cos(p.facing || 0) < 0;
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        if (p.hitFlash > 0) ctx.filter = 'brightness(2.6) saturate(0.4)';
+        ctx.translate(sx, sy - 3);
+        if (faceLeft) ctx.scale(-1, 1);
+        ctx.drawImage(hero, -S / 2, -S / 2, S, S);
+        ctx.restore();
+      } else {
+        // 回退:原圆圈
+        const grad = ctx.createRadialGradient(sx - 4, sy - 4, 1, sx, sy, R);
+        grad.addColorStop(0, lighten(baseColor, 50));
+        grad.addColorStop(0.5, baseColor);
+        grad.addColorStop(1, lighten(baseColor, -30));
+        ctx.beginPath(); ctx.arc(sx, sy, R, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+        ctx.strokeStyle = isMe ? '#ffffff' : lighten(baseColor, 30);
+        ctx.lineWidth = isMe ? 2 : 1.5;
+        ctx.stroke();
+      }
 
       // 攻击冷却环(仅自己):估算当前武器冷却进度,画在脚下
       if (isMe && p.weapon) {
@@ -1434,6 +1831,19 @@
           mmCtx.beginPath();
           mmCtx.arc(o.x * sx, o.y * sy, Math.max(1.5, o.radius * sx), 0, Math.PI * 2);
           mmCtx.fill();
+        }
+      }
+
+      // Fog overlay on minimap
+      if (fogExplored) {
+        const cw = fogCellSize * sx, ch = fogCellSize * sy;
+        mmCtx.fillStyle = 'rgba(0,0,0,0.88)';
+        for (let row = 0; row < fogRows; row++) {
+          for (let col = 0; col < fogCols; col++) {
+            if (!isFogBitSet(col, row)) {
+              mmCtx.fillRect(col * cw, row * ch, cw + 0.5, ch + 0.5);
+            }
+          }
         }
       }
 
@@ -1605,6 +2015,9 @@
         ctx.fillText(d.text, dx, dy);
         ctx.restore();
       }
+
+      // ── Fog of War ─────────────────────────────────────────
+      drawWarFog(W, H);
 
       // ── Vignette ────────────────────────────────────────────
       const vig = ctx.createRadialGradient(W/2, H/2, H*0.28, W/2, H/2, H*0.85);

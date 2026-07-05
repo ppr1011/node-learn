@@ -2,8 +2,8 @@ export const GameConfig = {
   PORT: 4000,
 
   // 游戏世界
-  MAP_WIDTH: 3000,
-  MAP_HEIGHT: 2000,
+  MAP_WIDTH: 6000,
+  MAP_HEIGHT: 4000,
   TICK_RATE: 20, // 每秒 20 次逻辑更新
 
   // AOI
@@ -15,12 +15,12 @@ export const GameConfig = {
   OBSTACLE_GRID_CELL_SIZE: 500, // 障碍物空间网格格子大小
   OBSTACLE_GAP: 40, // 障碍物之间保留的最小可通行间隙
   // 树:树干挡人(小碰撞半径),树冠盖在玩家头顶(大视觉尺寸)
-  TREE_COUNT: 55,
+  TREE_COUNT: 220,
   TREE_MIN_SIZE: 30,
   TREE_MAX_SIZE: 56,
   TREE_TRUNK_RATIO: 0.32, // 碰撞半径 = size * 该比例(只挡树干)
   // 石:整块挡人(碰撞半径 ≈ 视觉半径)
-  ROCK_COUNT: 26,
+  ROCK_COUNT: 104,
   ROCK_MIN_RADIUS: 34,
   ROCK_MAX_RADIUS: 84,
 
@@ -41,7 +41,7 @@ export const GameConfig = {
   WEATHER_CHANGE_INTERVAL: 30000, // 每 30 秒重掷一次天气
 
   // 敌人:已开启 (count > 0)
-  ENEMY_COUNT: 20,
+  ENEMY_COUNT: 50,
   ENEMY_GAP: 30,
   ENEMY_RADIUS: 14,
   ENEMY_HP: 40,
@@ -57,7 +57,12 @@ export const GameConfig = {
 
   // 武器掉落(击杀敌人 → 加权随机掉落 → 走过自动拾取装备)
   // 武器数值本身在 core/Weapon.ts,这里只放掉落调参旋钮
-  WEAPON_DROP_CHANCE: 0.5, // 每次击杀的掉落概率
+  WEAPON_DROP_CHANCE: 0.7, // 每次击杀的掉落概率(调高,让掉落更可见)
   WEAPON_PICKUP_RADIUS: 26, // 玩家中心多近算拾取
+  WEAPON_PICKUP_GRACE: 700, // 掉落后多久才可被拾取(ms):留出时间让掉落物在地上可见,避免贴身击杀瞬间被吞
   WEAPON_DROP_TTL: 45000, // 掉落物存活时长(ms),超时自然消失
+
+  // 迷雾探索
+  FOG_CELL_SIZE: 100,       // 探索网格粒度(px)
+  FOG_REVEAL_RADIUS: 400,   // 玩家视野揭雾半径(px)
 } as const;

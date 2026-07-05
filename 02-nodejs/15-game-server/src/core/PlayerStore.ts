@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { Player } from './Player';
 import { WeaponKind } from './Weapon';
+import { ExplorationMap } from './ExplorationMap';
 
 /**
  * 角色存档(持久化)—— 开放世界共享服务器中的「个人进度」。
@@ -22,6 +23,7 @@ export interface PersistedPlayer {
   maxHp: number;
   weapon: WeaponKind;
   facing: number;
+  explored: string; // base64 编码的迷雾探索位图
   savedAt: number;
 }
 
@@ -53,6 +55,7 @@ export class PlayerStore {
       maxHp: player.maxHp,
       weapon: player.weapon,
       facing: player.facing,
+      explored: player.exploration.toBase64(),
       savedAt: Date.now(),
     });
   }
