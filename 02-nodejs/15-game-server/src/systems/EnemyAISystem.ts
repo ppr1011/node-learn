@@ -30,7 +30,8 @@ export class EnemyAISystem {
       // 处理待复活
       if (enemy.isDead) {
         if (enemy.respawnAt > 0 && now >= enemy.respawnAt) {
-          const pos = this.world.findSafeSpawn(enemy.radius);
+          // 在本怪所属难度带内复活(而非全图随机),保持各带难度稳定
+          const pos = this.world.respawnPointFor(enemy);
           enemy.respawn(pos.x, pos.y);
         }
         continue;

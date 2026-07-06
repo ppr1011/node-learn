@@ -2,7 +2,8 @@ export const GameConfig = {
   PORT: 4000,
 
   // 游戏世界
-  MAP_WIDTH: 6000,
+  // 沿 x 轴切成 4 条难度带(见 core/Zone.ts,每带 3000 宽)→ 越往右怪越强
+  MAP_WIDTH: 12000,
   MAP_HEIGHT: 4000,
   TICK_RATE: 20, // 每秒 20 次逻辑更新
 
@@ -15,20 +16,21 @@ export const GameConfig = {
   OBSTACLE_GRID_CELL_SIZE: 500, // 障碍物空间网格格子大小
   OBSTACLE_GAP: 40, // 障碍物之间保留的最小可通行间隙
   // 树:树干挡人(小碰撞半径),树冠盖在玩家头顶(大视觉尺寸)
-  TREE_COUNT: 220,
+  // 数量随地图面积翻倍(6000×4000 → 12000×4000)同步翻倍,保持密度一致
+  TREE_COUNT: 440,
   TREE_MIN_SIZE: 30,
   TREE_MAX_SIZE: 56,
   TREE_TRUNK_RATIO: 0.32, // 碰撞半径 = size * 该比例(只挡树干)
   // 石:整块挡人(碰撞半径 ≈ 视觉半径)
-  ROCK_COUNT: 104,
+  ROCK_COUNT: 208,
   ROCK_MIN_RADIUS: 34,
   ROCK_MAX_RADIUS: 84,
 
   // 网络
   HEARTBEAT_INTERVAL: 5000,
   HEARTBEAT_TIMEOUT: 15000,
-  RATE_LIMIT_MAX: 30, // 最大令牌数
-  RATE_LIMIT_REFILL: 20, // 每秒恢复令牌
+  RATE_LIMIT_MAX: 60, // 最大令牌数(桶容量)
+  RATE_LIMIT_REFILL: 30, // 每秒恢复令牌(move 20/s + attack 4.5/s + 余量)
 
   // 游戏规则
   MAX_CHAT_LENGTH: 100,
@@ -40,7 +42,8 @@ export const GameConfig = {
   WEATHER_MAX_INTENSITY: 1,
   WEATHER_CHANGE_INTERVAL: 30000, // 每 30 秒重掷一次天气
 
-  // 敌人:已开启 (count > 0)
+  // 敌人:实际按区域分带生成(见 core/Zone.ts 的 ZONE_ENEMY_COUNT × 带数);
+  // 此处 ENEMY_COUNT 仅作旧 spawner 骨架的兜底占位,GameWorld 已不用它刷怪
   ENEMY_COUNT: 50,
   ENEMY_GAP: 30,
   ENEMY_RADIUS: 14,

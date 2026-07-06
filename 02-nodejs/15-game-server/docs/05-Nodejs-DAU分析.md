@@ -294,3 +294,171 @@ PCU: 100 万同时在线，每房间 20 人
 | **头部爆款** | 100万+ 人 | + 全球多地部署 + 自研引擎 + 专属运维团队 |
 
 每一步的复杂度都是前一步的 **5~10 倍**。从 Demo 到商业化不是线性增长，是指数级。但架构思想是一致的——本 Demo 中的 AOI、Tick Loop、Session 管理等概念，放到千万 DAU 的系统里依然是核心基础。
+
+---
+
+### 十一、本 Demo 的整体架构与消息流转
+
+前面几节讲的是"生产级千万 DAU"的宏观分层。这一节把镜头拉回**本项目自身**：一个单进程、内存存储、JSON 协议、20Hz tick 的服务端权威（server-authoritative）小型 MMO。麻雀虽小，AOI / Tick Loop / Session / 系统分层五脏俱全。
+
+> **关联代码**：`src/server.ts`（入口）· `src/core/GameWorld.ts`（主循环）· `src/network/{WebSocketServer,Session,Protocol}.ts`（网络层）· `src/systems/*`（逻辑系统）· `src/core/{AOI,Player,Enemy}.ts` · `src/ai/bt/*`（行为树）
+
+#### 1. 模块分层总览
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                          客户端 (client/index.html)                     │
+│               Canvas 渲染 · 输入采集 · 插值 · 迷雾/天气视觉              │
+└───────────────────────────────┬──────────────────────────────────────┘
+                                 │  WebSocket (JSON)
+                                 │  上行 c_move/c_attack/c_chat/c_ping/join
+                                 │  下行 s_state/s_join/s_damage/...
+┌───────────────────────────────▼──────────────────────────────────────┐
+│                        接入层 network/                                  │
+│  ┌────────────────────────┐   ┌──────────────────────────────────┐    │
+│  │ GameWebSocketServer     │   │ Session (每连接一个)              │    │
+│  │  · 分配 sessionId        │──▶│  · send()/encodeMessage          │    │
+│  │  · handleMessage 分发    │   │  · checkRate() 令牌桶限流(60/30) │    │
+│  │  · 心跳(5s)/超时(15s)踢线│   │  · isAlive / markActivity        │    │
+│  │  · kickExisting 顶号     │   └──────────────────────────────────┘    │
+│  └───────────┬────────────┘                                            │
+└──────────────┼─────────────────────────────────────────────────────────┘
+               │  按 MsgType 分发到对应系统
+┌──────────────▼─────────────────────────────────────────────────────────┐
+│                       核心世界 core/GameWorld                            │
+│  持有: players / enemies / drops / playerStore / aoi / obstacleGrid      │
+│        + GameTimer(20Hz) 主循环持有者                                    │
+│                                                                          │
+│   每 tick(50ms) 顺序执行:                                                │
+│     ① MovementSystem.update   玩家位移 + 障碍物碰撞 + 揭雾 + 刷新 AOI     │
+│     ② EnemyAISystem.update    行为树决策 → applyMovement                 │
+│     ③ updateDrops             掉落物拾取判定 + TTL 清理                   │
+│     ④ broadcastStates         按 AOI 给每个玩家发 s_state 快照           │
+│                                                                          │
+│  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌───────────────────┐    │
+│  │ Movement   │ │ Combat     │ │ Chat       │ │ EnemyAI            │    │
+│  │ System     │ │ System     │ │ System     │ │ System            │    │
+│  │(tick驱动)  │ │(事件驱动)  │ │(事件驱动)  │ │(tick驱动)         │    │
+│  └────────────┘ └─────┬──────┘ └────────────┘ └────────┬──────────┘    │
+│                       │ 命中/伤害/击杀/掉落              │ tick 行为树     │
+│                       ▼                                 ▼                │
+│                 立即广播 s_damage/                 src/ai/bt/           │
+│                 s_enemy_hit/s_dead/s_xp            enemyTree(kind)      │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │ AOIManager (九宫格,cell=500) —— 决定"谁能看到谁",范围广播的依据    │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │ PlayerStore (内存存档) —— 掉线/顶号时按 token 恢复位置/装备/进度     │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+关键设计：**两类消息，两种驱动方式**——
+- **状态类（位置）走 tick 驱动**：每 50ms 由 `broadcastStates` 按 AOI 周期广播 `s_state`。
+- **事件类（攻击/伤害/聊天/掉落）走事件驱动**：在消息处理或结算的当下**立即广播**，不等下一 tick，保证反馈及时。
+
+#### 2. 一条完整的消息流转：从"玩家攻击"到"全屏看到伤害"
+
+```
+玩家按下攻击键
+   │
+   ▼
+客户端 ─── WebSocket ──▶ { type: 'c_attack' }
+   │
+   ▼
+GameWebSocketServer.handleMessage()
+   │  ① session.checkRate()  令牌桶限流(不够则丢弃)
+   │  ② decodeMessage()      JSON 解析
+   │  ③ switch(MsgType.C_ATTACK) → world.combat.handleAttack(player)
+   ▼
+CombatSystem.handleAttack()
+   │  · 冷却门控(按武器攻速)
+   │  · 扇形/圆形命中判定(遍历 AOI 附近的敌人与玩家)
+   │  · 结算伤害、扣血、判定击杀
+   │  · 击杀 → 加经验(可能 s_levelup) + GameWorld.spawnWeaponDrop()
+   │
+   ├──▶ 立即广播 s_attack     (挥击动画,空挥也播)
+   ├──▶ 立即广播 s_damage     (对玩家造成的伤害数字)
+   ├──▶ 立即广播 s_enemy_hit  (对敌人造成的伤害)
+   ├──▶ 命中致死 → s_enemy_dead / s_dead
+   ├──▶ 掉落 → s_item_spawn
+   └──▶ 升级 → s_xp / s_levelup
+   ▼
+Session.send() → encodeMessage(JSON) → ws.send()
+   ▼
+视野内(AOI)的客户端收到事件 → 播放动画 / 弹伤害数字 / 刷新血条
+```
+
+对比"移动"的流转——它**不立即广播位置**，只更新意图，位置统一在 tick 末尾快照下发：
+
+```
+c_move → MovementSystem.handleInput() 仅设置 player.velocity/facing
+                                        (不移动,不广播)
+   ⋯ 等到下一个 tick ⋯
+GameWorld.tick() ① movement.update() 真正位移+碰撞  ④ broadcastStates() → s_state
+```
+
+#### 3. Tick 循环的完整调用链（`GameWorld.tick`）
+
+```
+GameTimer(20Hz, 50ms) ──每帧──▶ GameWorld.tick(dt)
+   │
+   ├─ ① for player: MovementSystem.update(player, dt)
+   │        └─ 应用 velocity·dt + ObstacleGrid 碰撞推出 + 地图边界收敛
+   │        └─ player.exploration.reveal()  按视野半径揭雾
+   │
+   ├─ ② EnemyAISystem.update(dt)
+   │        └─ 死亡敌人处理复活计时(respawnPointFor 回本难度带)
+   │        └─ 存活敌人: treeFor(kind).tick(ctx)  行为树决策(设 velocity/aiState)
+   │        └─ applyMovement(enemy, dt)          落地位移 + 边界收敛
+   │
+   ├─ ③ updateDrops(now)
+   │        └─ TTL 到期 → 删除 + s_item_pickup(byPlayerId=null)
+   │        └─ 玩家踩到 → equip + 删除 + s_item_pickup(byPlayerId=玩家)
+   │
+   └─ ④ broadcastStates()
+            └─ enemyStates = 全体敌人快照(算一次,所有人共用)
+            └─ for player:
+                 · aoi.getNearbyPlayers(player)  取视野内玩家
+                 · 新进视野 → s_enter;离开视野 → s_leave
+                 · s_state { players:[自己+附近], enemies }
+```
+
+**为什么敌人快照对所有人相同、玩家快照按 AOI 过滤？** 因为本 Demo 敌人总量可控（按难度带分布），全量下发简单可靠；而玩家可能很多，用 AOI 九宫格做范围过滤才能把每条 `s_state` 的体积压下来——这正是第一节"AOI 广播是 O(N×K)"在本项目的体现。
+
+#### 4. 连接生命周期与存档
+
+```
+connection ─▶ 分配 sessionId,建 Session (此时还没有 Player)
+   │
+   ▼ 首条 join { name, token? }
+handleJoin()
+   │  · token 存在 → 沿用(重连恢复);缺失 → playerStore.newToken()
+   │  · kickExisting(token) 踢掉旧连接(踢前先存档,防多标签页分身)
+   │  · new Player + world.addPlayer()
+   │        └─ playerStore 有存档 → 恢复位置/血量/等级/装备/迷雾
+   │        └─ 无存档 → findSafeSpawn 新手带出生 + 预揭雾
+   │        └─ 下发 s_join(世界初始快照) + 通知附近玩家 s_enter
+   ▼
+运行期: 每条消息 markActivity();心跳定时器每 5s 扫描,
+        !isAlive 或 15s 无活动 → 断开
+   ▼
+close/error ─▶ handleDisconnect()
+   │  · world.removePlayer() → playerStore.save() 存档
+   │  · 通知视野内玩家 s_leave;清理 sessions
+```
+
+#### 5. 与前面"生产级"章节的对应关系
+
+| 生产级概念（本文第三~九节） | 本 Demo 的对应实现 | 差距/待演进 |
+|------|------|------|
+| 接入层 Gateway | `GameWebSocketServer` + `Session` | 单进程;生产需多网关 + 负载均衡 |
+| 消息总线 MQ/Redis | 直接内存函数调用 | 无跨进程;生产需 MQ 解耦 |
+| 战斗服务 | `CombatSystem`（同进程即时结算） | 生产大型搜打撤需独立 C++ 权威服务 |
+| AOI / 大世界 | `AOIManager` 九宫格 | 单线程遍历;万人同屏需 C++/Go |
+| 数据层 MySQL/Redis | `PlayerStore` 内存 Map | 重启即丢;生产需 Redis + MySQL 持久化 |
+| Protobuf 序列化 | `JSON.stringify` | 生产上量需换 Protobuf/FlatBuffers |
+| cluster 多进程 | 单进程 | 生产按房间/分区横向扩 |
+
+一句话：**本 Demo 把"生产级架构图"里每个框都用最朴素的方式实现了一遍**——网关、系统分层、AOI、tick loop、存档一个不少，只是全塞进一个进程。理解了这张图，再看第三节那张"千万 DAU 全景图"，无非是把每个框独立成服务、加上 MQ 与持久化、换上更快的语言与序列化而已。

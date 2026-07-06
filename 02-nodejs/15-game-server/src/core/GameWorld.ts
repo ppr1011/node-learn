@@ -5,7 +5,7 @@ import { Obstacle, ObstacleGrid } from './Obstacle';
 import { Spawner } from '../spawn/Spawner';
 import { obstacleDefinition, ObstacleSpawn } from '../spawn/definitions/obstacles';
 import { weatherDefinition, WeatherState } from '../spawn/definitions/weather';
-import { enemyDefinition, EnemySpawn } from '../spawn/definitions/enemies';
+import { enemyDefinition } from '../spawn/definitions/enemies';
 import { itemDefinition } from '../spawn/definitions/items';
 import { GameTimer } from '../utils/Timer';
 import { MovementSystem } from '../systems/MovementSystem';
@@ -19,9 +19,13 @@ import { WeaponDrop } from './WeaponDrop';
 import { rollWeaponDrop } from './Weapon';
 import { PlayerStore } from './PlayerStore';
 import { ExplorationMap } from './ExplorationMap';
+import { Zone, ZONES, ZONE_ENEMY_COUNT, zonePublicState } from './Zone';
 
-/** 击杀不同敌人的掉落幸运系数(越高越易出稀有/史诗) */
-const DROP_LUCK: Record<string, number> = { slime: 0.8, skeleton: 1.1, demon: 1.7 };
+/** 击杀不同敌人的掉落幸运系数(越高越易出稀有/史诗/传说);再乘所在区域的 dropLuck */
+const DROP_LUCK: Record<string, number> = {
+  slime: 0.8, skeleton: 1.1, demon: 1.7,
+  orc: 1.4, wraith: 1.9, golem: 2.2, dragon: 3.0,
+};
 
 export class GameWorld {
   readonly players: Map<number, Player> = new Map();
@@ -106,13 +110,9 @@ export class GameWorld {
     this.combat = new CombatSystem(this);
     this.enemyAI = new EnemyAISystem(this);
 
-    // Spawn enemies (dynamic, avoids obstacles via shared occupied list)
-    const enemySpawns = this.spawner.generateDynamic('enemy') as EnemySpawn[];
-    for (const spawn of enemySpawns) {
-      const kind = (spawn.kind as EnemyKind) ?? 'slime';
-      const enemy = new Enemy(kind, spawn.x, spawn.y);
-      this.enemies.set(enemy.id, enemy);
-    }
+    // 按难度带刷怪:每条带在带内随机取该带允许的种类,并套用该带的属性倍率
+    // (深层带怪更硬更值钱)。落点用带内拒绝采样避障,与 findSafeSpawn 同一思路。
+    this.spawnEnemiesByZone();
 
     this.timer = new GameTimer(GameConfig.TICK_RATE, (dt) => this.tick(dt));
   }
@@ -155,8 +155,11 @@ export class GameWorld {
     const saved = this.playerStore.get(player.token);
     if (saved) {
       player.position = { x: saved.x, y: saved.y };
-      player.hp = saved.hp;
+      // 先恢复等级/经验,再 equip:等级加成会叠加到攻击力上
+      player.level = saved.level ?? 1;
+      player.xp = saved.xp ?? 0;
       player.maxHp = saved.maxHp;
+      player.hp = saved.hp;
       player.facing = saved.facing;
       player.isDead = false;
       player.equip(saved.weapon);
@@ -183,6 +186,7 @@ export class GameWorld {
       players: nearby.map(p => p.toPublicState()),
       mapWidth: GameConfig.MAP_WIDTH,
       mapHeight: GameConfig.MAP_HEIGHT,
+      zones: ZONES.map(zonePublicState),
       obstacles: this.obstacles,
       enemies: [...this.enemies.values()].map(e => e.toPublicState()),
       drops: [...this.drops.values()].map(d => d.toPublicState()),
@@ -252,10 +256,11 @@ export class GameWorld {
     for (const player of this.players.values()) player.session.send(type, data);
   }
 
-  /** 击杀敌人后按几率掉落一件武器(强敌 luck 更高) */
+  /** 击杀敌人后按几率掉落一件武器(强敌 luck 更高;再叠加所在难度带的 dropLuck) */
   spawnWeaponDrop(enemy: Enemy): void {
     if (Math.random() >= GameConfig.WEAPON_DROP_CHANCE) return;
-    const luck = DROP_LUCK[enemy.kind] ?? 1;
+    const zoneLuck = (ZONES[enemy.zoneId] ?? ZONES[0]!).dropLuck;
+    const luck = (DROP_LUCK[enemy.kind] ?? 1) * zoneLuck;
     const kind = rollWeaponDrop(luck);
     const drop = new WeaponDrop(
       kind, enemy.position.x, enemy.position.y,
@@ -330,18 +335,45 @@ export class GameWorld {
     }
   }
 
-  /** 拒绝采样找一个不与任何障碍物重叠的出生点(出生 / 复活共用) */
+  /** 启动时按难度带刷怪:每带 ZONE_ENEMY_COUNT 只,种类从该带 enemyKinds 随机,属性乘 statMult */
+  private spawnEnemiesByZone(): void {
+    for (const zone of ZONES) {
+      const kinds = zone.enemyKinds;
+      for (let i = 0; i < ZONE_ENEMY_COUNT; i++) {
+        const kind = kinds[Math.floor(Math.random() * kinds.length)] ?? 'slime';
+        const radius = new Enemy(kind, 0, 0).radius; // 取该种类碰撞半径用于避障
+        const pos = this.findSafeSpawnInZone(zone, radius);
+        const enemy = new Enemy(kind, pos.x, pos.y, zone.statMult, zone.id);
+        this.enemies.set(enemy.id, enemy);
+      }
+    }
+  }
+
+  /** 拒绝采样找一个不与任何障碍物重叠的出生点;新玩家出生在最左的新手带 */
   findSafeSpawn(radius: number): { x: number; y: number } {
+    return this.findSafeSpawnInZone(ZONES[0]!, radius);
+  }
+
+  /** 在指定难度带内拒绝采样一个不与障碍物重叠的落点(带内边缘留 10% 余量) */
+  findSafeSpawnInZone(zone: Zone, radius: number): { x: number; y: number } {
+    const { x: zx, y: zy, w, h } = zone.bounds;
+    const padX = w * 0.08, padY = h * 0.1;
     for (let i = 0; i < 30; i++) {
-      const x = Math.random() * GameConfig.MAP_WIDTH * 0.8 + GameConfig.MAP_WIDTH * 0.1;
-      const y = Math.random() * GameConfig.MAP_HEIGHT * 0.8 + GameConfig.MAP_HEIGHT * 0.1;
+      const x = zx + padX + Math.random() * (w - padX * 2);
+      const y = zy + padY + Math.random() * (h - padY * 2);
       const blocked = this.obstacleGrid.queryNearby(x, y, radius).some(o => {
         return Math.hypot(x - o.x, y - o.y) < o.radius + radius;
       });
       if (!blocked) return { x, y };
     }
-    // 兜底:极端情况下返回地图中心(即便重叠,下一 tick 会被推出)
-    return { x: GameConfig.MAP_WIDTH / 2, y: GameConfig.MAP_HEIGHT / 2 };
+    // 兜底:带中心(即便重叠,下一 tick 会被推出)
+    return { x: zx + w / 2, y: zy + h / 2 };
+  }
+
+  /** 敌人复活落点:回到它所属的难度带内(避免深渊巨龙复活到新手区) */
+  respawnPointFor(enemy: Enemy): { x: number; y: number } {
+    const zone = ZONES[enemy.zoneId] ?? ZONES[0]!;
+    return this.findSafeSpawnInZone(zone, enemy.radius);
   }
 
   getStats() {

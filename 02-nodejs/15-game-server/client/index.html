@@ -42,6 +42,37 @@
     }
     #header .status { color: #4ecca3; letter-spacing: 1px; }
     #header .stats { color: #556; letter-spacing: 1px; }
+    /* 等级 + 经验条:细长一条贴在顶栏下方,横跨全宽 */
+    #xp-bar {
+      position: relative;
+      width: 100%;
+      height: 16px;
+      background: rgba(6, 10, 20, 0.95);
+      border-bottom: 1px solid #1a3a5c;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      overflow: hidden;
+    }
+    #xp-fill {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 0%;
+      background: linear-gradient(90deg, #f0a500, #ffe066);
+      box-shadow: 0 0 10px rgba(255, 224, 102, 0.5);
+      transition: width 0.35s ease;
+    }
+    #xp-label {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      text-align: center;
+      font-size: 10px;
+      letter-spacing: 1px;
+      color: #ffe9b0;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+    }
+    #xp-label b { color: #ffd23f; }
     #game-container {
       flex: 1;
       display: flex;
@@ -319,6 +350,10 @@
     <span class="stats" id="stats"></span>
     <button id="drawer-toggle" class="touch-only" aria-label="打开聊天">☰</button>
   </div>
+  <div id="xp-bar">
+    <div id="xp-fill"></div>
+    <div id="xp-label">LV.1 &nbsp; 0 / 30 EXP</div>
+  </div>
   <div id="game-container">
     <canvas id="canvas"></canvas>
     <div id="minimap">
@@ -330,6 +365,7 @@
         WASD · 移动 &nbsp; SPACE · 攻击<br>
         ENTER · 聊天 &nbsp; ESC · 关闭输入<br>
         <span style="color:#4ecca3">击杀敌人掉落武器 · 走过即拾取装备</span><br>
+        <span style="color:#ffd23f">击杀获得经验 · 升级提升生命与攻击</span><br>
         <span style="color:#365">T · 切天气 &nbsp; [ ] · 强度 &nbsp; Y · 复原</span>
       </div>
       <div id="chat-input-container">
@@ -380,8 +416,11 @@
     let reconnectTimer = null;
     let reconnectAttempts = 0;
     let players = {};
-    let mapWidth = 3000;
-    let mapHeight = 2000;
+    let mapWidth = 12000;
+    let mapHeight = 4000;
+    let zones = [];            // 服务端下发的难度带 [{id,name,tier,recommendedLevel,bounds,color}]
+    let currentZoneId = -1;    // 玩家当前所在带(用于进带横幅切换判定)
+    let zoneBanner = null;     // { text, sub, color, t } 进带横幅,t 从 1 递减到 0 淡出
     let camera = { x: 0, y: 0 };
     let keys = {};
     let connected = false;
@@ -419,6 +458,8 @@
     const mmEl       = document.getElementById('minimap');
     const statusEl   = document.getElementById('status');
     const statsEl    = document.getElementById('stats');
+    const xpFillEl   = document.getElementById('xp-fill');
+    const xpLabelEl  = document.getElementById('xp-label');
     const chatBox    = document.getElementById('chat-box');
     const chatInput  = document.getElementById('chat-input');
     const loginOverlay = document.getElementById('login-overlay');
@@ -482,6 +523,109 @@
           color: ['#ff9966','#ffcc66','#ff66aa','#aaaaff','#ffffff'][Math.floor(srand(i * 5 + 602) * 5)],
         });
       }
+    }
+
+    // ─── 难度带(Zone)───────────────────────────────────────────
+    function zoneAtX(x) {
+      for (const z of zones) {
+        if (x >= z.bounds.x && x < z.bounds.x + z.bounds.w) return z;
+      }
+      return null;
+    }
+
+    // hex → rgba(带 alpha),用于地面着色
+    function hexToRgba(hex, a) {
+      const h = hex.replace('#', '');
+      const r = parseInt(h.substring(0, 2), 16);
+      const g = parseInt(h.substring(2, 4), 16);
+      const b = parseInt(h.substring(4, 6), 16);
+      return `rgba(${r},${g},${b},${a})`;
+    }
+
+    // 世界坐标区域带:地面淡色叠层 + 带间分隔线 + 世界锚定的带名/推荐等级
+    function drawZones() {
+      if (!zones.length) return;
+      const W = canvas.width, H = canvas.height;
+      for (const z of zones) {
+        const bx = z.bounds.x - camera.x;
+        const by = z.bounds.y - camera.y;
+        // 只画进入视口的带
+        if (bx + z.bounds.w < 0 || bx > W) continue;
+        // 地面着色(低透明度,叠在草地之上)
+        ctx.fillStyle = hexToRgba(z.color, 0.12);
+        ctx.fillRect(bx, by, z.bounds.w, z.bounds.h);
+        // 带右边界分隔线(最后一带不画)
+        if (z.id < zones.length - 1) {
+          const ex = bx + z.bounds.w;
+          ctx.save();
+          ctx.setLineDash([14, 12]);
+          ctx.strokeStyle = hexToRgba(z.color, 0.5);
+          ctx.lineWidth = 3;
+          ctx.beginPath(); ctx.moveTo(ex, by); ctx.lineTo(ex, by + z.bounds.h); ctx.stroke();
+          ctx.restore();
+        }
+        // 世界锚定的大号带名 + 推荐等级(画在带上部中央)
+        const cx = bx + z.bounds.w / 2;
+        const cy = by + 120;
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.globalAlpha = 0.5;
+        ctx.fillStyle = z.color;
+        ctx.font = 'bold 44px "Courier New", monospace';
+        ctx.fillText(z.name, cx, cy);
+        ctx.globalAlpha = 0.4;
+        ctx.fillStyle = '#e8eefc';
+        ctx.font = 'bold 20px "Courier New", monospace';
+        ctx.fillText(`推荐等级 ${z.recommendedLevel}`, cx, cy + 30);
+        ctx.restore();
+      }
+    }
+
+    // 顶部中央进带横幅(约 2.5s 淡出);切带时由 render 循环触发
+    function drawZoneBanner(W) {
+      if (!zoneBanner) return;
+      zoneBanner.t -= 1 / 150; // ~2.5s @60fps
+      if (zoneBanner.t <= 0) { zoneBanner = null; return; }
+      const a = Math.min(1, zoneBanner.t * 1.6); // 末段淡出
+      const y = 92;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.globalAlpha = a;
+      ctx.font = 'bold 30px "Courier New", monospace';
+      const tw = ctx.measureText(zoneBanner.text).width;
+      ctx.fillStyle = 'rgba(6,10,22,0.7)';
+      ctx.fillRect(W / 2 - tw / 2 - 22, y - 30, tw + 44, 58);
+      ctx.strokeStyle = hexToRgba(zoneBanner.color, a);
+      ctx.lineWidth = 2;
+      ctx.strokeRect(W / 2 - tw / 2 - 22, y - 30, tw + 44, 58);
+      ctx.shadowColor = zoneBanner.color; ctx.shadowBlur = 16;
+      ctx.fillStyle = zoneBanner.color;
+      ctx.fillText(zoneBanner.text, W / 2, y);
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = a * 0.85;
+      ctx.fillStyle = '#cdd6e6';
+      ctx.font = '14px "Courier New", monospace';
+      ctx.fillText(zoneBanner.sub, W / 2, y + 20);
+      ctx.restore();
+    }
+
+    // 依据玩家位置判定当前带;切换时弹横幅 + 系统消息
+    function updateZoneBanner() {
+      const me = players[myId];
+      if (!me) return;
+      const z = zoneAtX(me.targetX ?? me.x);
+      if (!z || z.id === currentZoneId) return;
+      const first = currentZoneId === -1;
+      currentZoneId = z.id;
+      if (first) return; // 首次进入(登录/重连)不弹横幅,避免打扰
+      const myLv = me.level || 1;
+      const warn = myLv < z.recommendedLevel ? '⚠ ' : '';
+      zoneBanner = {
+        text: `${warn}进入 ${z.name}`,
+        sub: `推荐等级 ${z.recommendedLevel}` + (myLv < z.recommendedLevel ? ` · 你的等级 ${myLv},当心!` : ''),
+        color: z.color, t: 1,
+      };
+      addSysMsg(`进入区域:${z.name}(推荐等级 ${z.recommendedLevel})`);
     }
 
     // ─── Fog of War (迷雾探索) ─────────────────────────────────
@@ -686,6 +830,8 @@
           reconnectAttempts = 0;
           mapWidth  = msg.data.mapWidth;
           mapHeight = msg.data.mapHeight;
+          zones = msg.data.zones || [];
+          currentZoneId = -1; // 重置:下一帧据玩家位置重新判定并弹进带横幅
           players = {};   // 清空旧快照:重连时避免残留其他玩家的「幽灵」
           players[myId] = msg.data.self;
           for (const p of msg.data.players) players[p.id] = p;
@@ -699,6 +845,7 @@
           if (msg.data.weather) { weather = msg.data.weather; addSysMsg(`当前天气: ${weatherLabel(weather.kind)}`); }
           if (msg.data.fogGrid) initFogOfWar(msg.data.fogGrid);
           addSysMsg(`进入了游戏世界 (${mapWidth}x${mapHeight})`);
+          updateXpBar();
           generateMap();
           break;
 
@@ -716,7 +863,7 @@
         case 's_state':
           for (const p of msg.data.players) {
             if (players[p.id]) {
-              Object.assign(players[p.id], { targetX: p.x, targetY: p.y, hp: p.hp, isDead: p.isDead, weapon: p.weapon, facing: p.facing });
+              Object.assign(players[p.id], { targetX: p.x, targetY: p.y, hp: p.hp, maxHp: p.maxHp, isDead: p.isDead, weapon: p.weapon, facing: p.facing, level: p.level, xp: p.xp, xpToNext: p.xpToNext });
             } else {
               players[p.id] = p;
             }
@@ -773,6 +920,36 @@
             en.isDead = true;
             spawnDeath(en.targetX ?? en.x, en.targetY ?? en.y);
             addSysMsg(`击杀了 ${en.kind}!`);
+          }
+          break;
+        }
+
+        case 's_xp': {
+          const p = players[msg.data.id];
+          if (p) { p.level = msg.data.level; p.xp = msg.data.xp; p.xpToNext = msg.data.xpToNext; }
+          if (msg.data.id === myId) {
+            updateXpBar();
+            // 击杀者头顶飘出 +经验
+            const me = players[myId];
+            if (me) spawnDmgNumText((me.targetX ?? me.x), (me.targetY ?? me.y) - 26, `+${msg.data.gained} EXP`, '#ffe066');
+          }
+          break;
+        }
+
+        case 's_levelup': {
+          const p = players[msg.data.id];
+          if (p) {
+            Object.assign(p, { level: msg.data.level, hp: msg.data.hp, maxHp: msg.data.maxHp, xp: msg.data.xp, xpToNext: msg.data.xpToNext });
+            const lx = p.targetX ?? p.x, ly = p.targetY ?? p.y;
+            spawnLevelUp(lx, ly);
+            spawnDmgNumText(lx, ly - 34, `LEVEL UP! Lv.${msg.data.level}`, '#ffd23f');
+          }
+          if (msg.data.id === myId) {
+            updateXpBar();
+            screenShake = Math.max(screenShake, 6);
+            addSysMsg(`✦ 升级了！现在是 Lv.${msg.data.level}（生命上限 ${msg.data.maxHp}）`);
+          } else if (p) {
+            addSysMsg(`${p.name} 升到了 Lv.${msg.data.level}`);
           }
           break;
         }
@@ -958,7 +1135,8 @@
       if (ctrlHint) ctrlHint.innerHTML =
         '摇杆 · 移动 &nbsp; 攻击键 · 攻击(可长按连击)<br>' +
         '💬 · 聊天 &nbsp; ☰ · 开关此面板<br>' +
-        '<span style="color:#4ecca3">击杀敌人掉落武器 · 走过即拾取装备</span>';
+        '<span style="color:#4ecca3">击杀敌人掉落武器 · 走过即拾取装备</span><br>' +
+        '<span style="color:#ffd23f">击杀获得经验 · 升级提升生命与攻击</span>';
     }
 
     function setupTouchControls() {
@@ -1076,6 +1254,19 @@
         spdMin: 1.5, spdMax: 3.5, szMin: 2, szMax: 4,
         color, decay: 0.04,
       });
+    }
+
+    // 升级特效:金色上升光柱粒子 + 双层光环 + 震波环
+    function spawnLevelUp(x, y) {
+      spawnRing(x, y, '#ffd23f', 20);
+      spawnRing(x, y, '#fff3c0', 14);
+      // 向上喷发的金色粒子(负重力 → 上升)
+      spawnParticles(x, y, 26, {
+        spdMin: 1, spdMax: 4, szMin: 2, szMax: 5,
+        color: ['#ffd23f', '#ffe066', '#fff7d6', '#f0a500'],
+        decay: 0.02, gravity: -0.14,
+      });
+      shockwaves.push({ x, y, r: 6, max: 60, life: 1, color: '#ffe066', width: 3 });
     }
 
     function spawnDmgNum(x, y, dmg) {
@@ -1207,13 +1398,18 @@
     }
 
     // ─── Enemy Sprites (Kenney Tiny Dungeon · CC0) ────────────────
-    // 贴图: client/assets/enemies/{slime,skeleton,demon}.png
+    // 贴图: client/assets/enemies/{slime,skeleton,demon,orc,wraith,golem,dragon}.png
     // 来源: https://kenney.nl/assets/tiny-dungeon  许可: CC0 1.0
     // 加载失败 → 自动回退程序化像素画(同天气系统的范式 A/B 设计)
     const ENEMY_SPRITE_PATHS = {
       slime:    'assets/enemies/slime.png',
       skeleton: 'assets/enemies/skeleton.png',
       demon:    'assets/enemies/demon.png',
+      // 深层带强敌:同一素材包内取最贴近的生物 tile(见 assets/enemies/README.md)
+      orc:      'assets/enemies/orc.png',
+      wraith:   'assets/enemies/wraith.png',
+      golem:    'assets/enemies/golem.png',
+      dragon:   'assets/enemies/dragon.png',
     };
     const _enemySprites = {};
     function loadEnemySprite(kind) {
@@ -1227,10 +1423,15 @@
     const spriteOK = img => !!img && img.complete && img.naturalWidth > 0;
 
     // Enemy kind visual config (fallback procedural drawing colors)
+    // scale:体型缩放(golem/dragon 更大);默认 1。
     const ENEMY_VIS = {
-      slime:    { color: '#43e1b3', accent: '#25956a', glow: '#00ffaa', label: '史莱姆' },
-      skeleton: { color: '#c0cbdc', accent: '#8b9bb4', glow: '#aabbcc', label: '骷髅兵' },
-      demon:    { color: '#e84537', accent: '#c02010', glow: '#ff4422', label: '火焰恶魔' },
+      slime:    { color: '#43e1b3', accent: '#25956a', glow: '#00ffaa', label: '史莱姆',   scale: 1 },
+      skeleton: { color: '#c0cbdc', accent: '#8b9bb4', glow: '#aabbcc', label: '骷髅兵',   scale: 1 },
+      demon:    { color: '#e84537', accent: '#c02010', glow: '#ff4422', label: '火焰恶魔', scale: 1 },
+      orc:      { color: '#6fae4a', accent: '#3f6b28', glow: '#8fd257', label: '兽人战士', scale: 1.15 },
+      wraith:   { color: '#9d7bd8', accent: '#5b3f8f', glow: '#c9a8ff', label: '暗影怨灵', scale: 1.05 },
+      golem:    { color: '#8a8f9c', accent: '#565b66', glow: '#b8c0cc', label: '岩石魔像', scale: 1.5 },
+      dragon:   { color: '#e0663a', accent: '#a83010', glow: '#ffb347', label: '深渊巨龙', scale: 1.8 },
     };
 
     // Pre-generate procedural sprite canvases (one per kind, cached)
@@ -1293,7 +1494,7 @@
         // legs
         oc2.fillStyle = c;
         oc2.fillRect(cx-4, cy+5, 3, 6); oc2.fillRect(cx+1, cy+5, 3, 6);
-      } else { // demon
+      } else if (kind === 'demon') {
         const c = vis.color, d = vis.accent;
         // head + horns
         oc2.fillStyle = '#8b0000'; // dark red horns
@@ -1315,6 +1516,76 @@
         // legs
         oc2.fillStyle = c;
         oc2.fillRect(cx-4, cy+7, 3, 5); oc2.fillRect(cx+1, cy+7, 3, 5);
+      } else if (kind === 'orc') {
+        const c = vis.color, d = vis.accent;
+        // 宽壮头部
+        oc2.fillStyle = c;
+        oc2.fillRect(cx-6, cy-13, 12, 9);
+        // 獠牙
+        oc2.fillStyle = '#f4f0dc';
+        oc2.fillRect(cx-4, cy-5, 2, 3); oc2.fillRect(cx+2, cy-5, 2, 3);
+        // 红眼
+        oc2.fillStyle = '#ffcc00';
+        oc2.fillRect(cx-4, cy-11, 3, 2); oc2.fillRect(cx+1, cy-11, 3, 2);
+        // 厚实躯干 + 铠甲
+        oc2.fillStyle = d;
+        oc2.fillRect(cx-7, cy-3, 14, 9);
+        oc2.fillStyle = '#4a3a2a';
+        oc2.fillRect(cx-7, cy, 14, 2);
+        // 粗腿
+        oc2.fillStyle = c;
+        oc2.fillRect(cx-6, cy+6, 4, 6); oc2.fillRect(cx+2, cy+6, 4, 6);
+      } else if (kind === 'wraith') {
+        const c = vis.color, d = vis.accent;
+        // 兜帽
+        oc2.fillStyle = d;
+        oc2.fillRect(cx-6, cy-14, 12, 8);
+        // 幽光双眼
+        oc2.fillStyle = '#e6d2ff';
+        oc2.fillRect(cx-4, cy-11, 3, 2); oc2.fillRect(cx+1, cy-11, 3, 2);
+        // 飘逸斗篷躯干(下摆参差)
+        oc2.fillStyle = c;
+        oc2.fillRect(cx-6, cy-6, 12, 12);
+        oc2.fillRect(cx-6, cy+6, 3, 4); oc2.fillRect(cx-1, cy+6, 3, 5); oc2.fillRect(cx+4, cy+6, 3, 3);
+      } else if (kind === 'golem') {
+        const c = vis.color, d = vis.accent;
+        // 巨大方块头
+        oc2.fillStyle = c;
+        oc2.fillRect(cx-7, cy-14, 14, 10);
+        // 发光核心眼
+        oc2.fillStyle = '#7fe0ff';
+        oc2.fillRect(cx-4, cy-11, 3, 3); oc2.fillRect(cx+2, cy-11, 3, 3);
+        // 岩石躯干 + 裂纹
+        oc2.fillStyle = d;
+        oc2.fillRect(cx-9, cy-3, 18, 11);
+        oc2.fillStyle = '#3a3f48';
+        oc2.fillRect(cx-2, cy-3, 1, 11); oc2.fillRect(cx-6, cy+2, 12, 1);
+        // 粗壮双臂
+        oc2.fillStyle = c;
+        oc2.fillRect(cx-12, cy-2, 4, 8); oc2.fillRect(cx+8, cy-2, 4, 8);
+      } else { // dragon
+        const c = vis.color, d = vis.accent;
+        // 双角
+        oc2.fillStyle = '#f0e0c0';
+        oc2.fillRect(cx-7, cy-16, 2, 5); oc2.fillRect(cx+5, cy-16, 2, 5);
+        // 龙头
+        oc2.fillStyle = c;
+        oc2.fillRect(cx-6, cy-13, 12, 9);
+        // 口鼻
+        oc2.fillStyle = d;
+        oc2.fillRect(cx-3, cy-5, 6, 3);
+        // 灼目
+        oc2.fillStyle = '#ffe000';
+        oc2.fillRect(cx-4, cy-11, 3, 2); oc2.fillRect(cx+1, cy-11, 3, 2);
+        // 展开双翼
+        oc2.fillStyle = d;
+        oc2.fillRect(cx-14, cy-4, 8, 9); oc2.fillRect(cx+6, cy-4, 8, 9);
+        // 躯干
+        oc2.fillStyle = c;
+        oc2.fillRect(cx-5, cy-2, 10, 9);
+        // 腹鳞高光
+        oc2.fillStyle = '#ffcf9e';
+        oc2.fillRect(cx-3, cy, 6, 5);
       }
     }
 
@@ -1332,7 +1603,8 @@
       const sx = Math.round(e.x - camera.x);
       const sy = Math.round(e.y - camera.y);
       const vis = ENEMY_VIS[e.kind] || ENEMY_VIS.slime;
-      const R = 14;
+      const scale = vis.scale || 1;
+      const R = 14 * scale;
 
       if (e.isDead) {
         ctx.save();
@@ -1370,17 +1642,17 @@
         if (e.hitFlash > 0) {
           ctx.filter = 'brightness(3) saturate(0)';
         }
-        // Draw 16×16 sprite scaled to 32×32, centered on (sx, sy-2) for visual balance
+        // Draw 16×16 sprite scaled to 32×32 (再乘体型 scale),centered on (sx, sy-2)
         ctx.imageSmoothingEnabled = false; // keep pixel art crisp
-        ctx.drawImage(spr, sx - 16, sy - 18, 32, 32);
+        ctx.drawImage(spr, sx - 16 * scale, sy - 18 * scale, 32 * scale, 32 * scale);
         ctx.restore();
       } else {
-        // Procedural fallback
+        // Procedural fallback(同样按体型 scale 放大)
         const proc = getProcSprite(e.kind);
         ctx.save();
         if (e.hitFlash > 0) ctx.filter = 'brightness(3) saturate(0)';
         ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(proc, sx - 16, sy - 16);
+        ctx.drawImage(proc, sx - 16 * scale, sy - 16 * scale, 32 * scale, 32 * scale);
         ctx.restore();
       }
 
@@ -1415,16 +1687,27 @@
     // 武器数值/稀有度是服务端权威(见 src/core/Weapon.ts);客户端只留一份只读副本
     // 用于 HUD 显示与动画时长参数。贴图走 assets/weapons/*.png(Kenney CC0),
     // 缺文件时回退程序化图标(与敌人/天气同一「范式 A/B」思路)。
-    const RARITY_COLOR = { common: '#b5c6d6', rare: '#4ea3ff', epic: '#b06bff' };
-    const RARITY_LABEL = { common: '普通', rare: '稀有', epic: '史诗' };
+    const RARITY_COLOR = { common: '#b5c6d6', rare: '#4ea3ff', epic: '#b06bff', legendary: '#ffb347' };
+    const RARITY_LABEL = { common: '普通', rare: '稀有', epic: '史诗', legendary: '传说' };
     const WEAPONS = {
-      fist:       { label: '徒手', rarity: 'common', cooldown: 600,  dur: 14, range: 90  },
-      dagger:     { label: '匕首', rarity: 'common', cooldown: 450,  dur: 14, range: 70  },
-      sword:      { label: '铁剑', rarity: 'common', cooldown: 800,  dur: 18, range: 105 },
-      greatsword: { label: '巨剑', rarity: 'rare',   cooldown: 1250, dur: 26, range: 120 },
-      axe:        { label: '战斧', rarity: 'rare',   cooldown: 1400, dur: 24, range: 95  },
-      hammer:     { label: '战锤', rarity: 'epic',   cooldown: 1700, dur: 30, range: 100 },
-      staff:      { label: '法杖', rarity: 'epic',   cooldown: 1150, dur: 22, range: 240 },
+      fist:        { label: '徒手',     rarity: 'common',    cooldown: 600,  dur: 14, range: 90  },
+      dagger:      { label: '匕首',     rarity: 'common',    cooldown: 450,  dur: 14, range: 70  },
+      sword:       { label: '铁剑',     rarity: 'common',    cooldown: 800,  dur: 18, range: 105 },
+      greatsword:  { label: '巨剑',     rarity: 'rare',      cooldown: 1250, dur: 26, range: 120 },
+      axe:         { label: '战斧',     rarity: 'rare',      cooldown: 1400, dur: 24, range: 95  },
+      hammer:      { label: '战锤',     rarity: 'epic',      cooldown: 1700, dur: 30, range: 100 },
+      staff:       { label: '法杖',     rarity: 'epic',      cooldown: 1150, dur: 22, range: 240 },
+      // 深层带高阶武器(动画/图标复用同手感基础武器,见 ANIM_OF)
+      katana:      { label: '太刀',     rarity: 'rare',      cooldown: 650,  dur: 16, range: 105 },
+      battleaxe:   { label: '战斧',     rarity: 'epic',      cooldown: 1500, dur: 24, range: 100 },
+      warhammer:   { label: '战锤·雷霆', rarity: 'legendary', cooldown: 1900, dur: 32, range: 105 },
+      runestaff:   { label: '符文杖',   rarity: 'legendary', cooldown: 1050, dur: 22, range: 260 },
+      dragonblade: { label: '龙刃',     rarity: 'legendary', cooldown: 1100, dur: 28, range: 130 },
+    };
+    // 高阶武器 → 复用哪件基础武器的攻击动画/程序化图标(零新增动画分支)
+    const ANIM_OF = {
+      katana: 'sword', battleaxe: 'axe', warhammer: 'hammer',
+      runestaff: 'staff', dragonblade: 'greatsword',
     };
 
     // ── 武器贴图(Kenney Tiny Dungeon · CC0)+ 程序化兜底 ──────────────
@@ -1432,6 +1715,10 @@
       dagger: 'assets/weapons/dagger.png', sword: 'assets/weapons/sword.png',
       greatsword: 'assets/weapons/greatsword.png', axe: 'assets/weapons/axe.png',
       hammer: 'assets/weapons/hammer.png', staff: 'assets/weapons/staff.png',
+      // 深层带高阶武器:同素材包内的专属 tile(见 assets/weapons/README.md)
+      katana: 'assets/weapons/katana.png', battleaxe: 'assets/weapons/battleaxe.png',
+      warhammer: 'assets/weapons/warhammer.png', runestaff: 'assets/weapons/runestaff.png',
+      dragonblade: 'assets/weapons/dragonblade.png',
     };
     const _weaponSprites = {};
     function loadWeaponSprite(kind) {
@@ -1449,21 +1736,25 @@
       if (_procWeapons[kind]) return _procWeapons[kind];
       const oc = document.createElement('canvas'); oc.width = 16; oc.height = 16;
       const c = oc.getContext('2d');
-      if (kind === 'dagger' || kind === 'sword' || kind === 'greatsword') {
-        const len = kind === 'dagger' ? 7 : kind === 'sword' ? 10 : 12;
-        c.strokeStyle = '#cdd6e6'; c.lineWidth = kind === 'greatsword' ? 3 : 2;
+      const style = ANIM_OF[kind] || kind; // 高阶武器复用基础武器的图标形状
+      // 传说武器刃身镀金,一眼可辨
+      const blade = (WEAPONS[kind]?.rarity === 'legendary') ? '#ffd27a' : '#cdd6e6';
+      if (style === 'dagger' || style === 'sword' || style === 'greatsword') {
+        const len = style === 'dagger' ? 7 : style === 'sword' ? 10 : 12;
+        c.strokeStyle = blade; c.lineWidth = style === 'greatsword' ? 3 : 2;
         c.beginPath(); c.moveTo(8, 15); c.lineTo(8, 15 - len); c.stroke();
         c.strokeStyle = '#8a6a3a'; c.lineWidth = 2;
         c.beginPath(); c.moveTo(5, 13); c.lineTo(11, 13); c.stroke();
-      } else if (kind === 'axe') {
+      } else if (style === 'axe') {
         c.fillStyle = '#8a6a3a'; c.fillRect(7, 3, 2, 12);
-        c.fillStyle = '#b8c0cc'; c.beginPath(); c.moveTo(9, 3); c.lineTo(14, 6); c.lineTo(9, 9); c.fill();
-      } else if (kind === 'hammer') {
+        c.fillStyle = blade; c.beginPath(); c.moveTo(9, 3); c.lineTo(14, 6); c.lineTo(9, 9); c.fill();
+      } else if (style === 'hammer') {
         c.fillStyle = '#8a6a3a'; c.fillRect(7, 5, 2, 10);
-        c.fillStyle = '#9aa4b2'; c.fillRect(4, 3, 8, 4);
-      } else if (kind === 'staff') {
+        c.fillStyle = (WEAPONS[kind]?.rarity === 'legendary') ? '#ffcf9e' : '#9aa4b2'; c.fillRect(4, 3, 8, 4);
+      } else if (style === 'staff') {
         c.fillStyle = '#8a6a3a'; c.fillRect(7, 5, 2, 10);
-        c.fillStyle = '#b06bff'; c.beginPath(); c.arc(8, 4, 3, 0, Math.PI * 2); c.fill();
+        c.fillStyle = (WEAPONS[kind]?.rarity === 'legendary') ? '#ffb347' : '#b06bff';
+        c.beginPath(); c.arc(8, 4, 3, 0, Math.PI * 2); c.fill();
       }
       _procWeapons[kind] = oc; return oc;
     }
@@ -1472,6 +1763,18 @@
       ctx.save(); ctx.imageSmoothingEnabled = false;
       if (spriteOK(spr)) ctx.drawImage(spr, cx - size / 2, cy - size / 2, size, size);
       else ctx.drawImage(getProcWeapon(kind), cx - size / 2, cy - size / 2, size, size);
+      ctx.restore();
+    }
+    // 旋转绘制武器图标:贴图默认「刃朝上」(handle 在下),rot 为画布旋转弧度。
+    // 让刃指向世界角度 θ → rot = θ + π/2。用于攻击动画里真正把武器挥出去。
+    function drawWeaponIconRot(cx, cy, kind, size, rot) {
+      const spr = loadWeaponSprite(kind);
+      const img = spriteOK(spr) ? spr : getProcWeapon(kind);
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+      ctx.translate(cx, cy);
+      ctx.rotate(rot);
+      ctx.drawImage(img, -size / 2, -size / 2, size, size);
       ctx.restore();
     }
 
@@ -1511,10 +1814,12 @@
       const a = p.attackAnim; if (!a) return;
       a.t += 1 / a.dur;
       const t = Math.min(1, a.t), dir = a.dir, reach = a.reach;
+      const arche = ANIM_OF[a.weapon] || a.weapon; // 高阶武器复用基础武器动画
+      const legendary = WEAPONS[a.weapon]?.rarity === 'legendary'; // 传说武器拖尾镀金
       const pt = (ang, r) => [sx + Math.cos(ang) * r, sy + Math.sin(ang) * r];
       ctx.save(); ctx.lineCap = 'round';
 
-      if (a.weapon === 'fist') {                    // 徒手:有方向的挥拳(出拳→收回)
+      if (arche === 'fist') {                    // 徒手:有方向的挥拳(出拳→收回)
         const ext = Math.sin(Math.min(1, t) * Math.PI); // 0→1→0
         const reachP = Math.min(reach, 60) * 0.7;
         const bx = sx + Math.cos(dir) * 8, by = sy + Math.sin(dir) * 8;         // 肩/起手
@@ -1537,30 +1842,47 @@
           const wx = p.x + Math.cos(dir) * reachP, wy = p.y + Math.sin(dir) * reachP;
           spawnParticles(wx, wy, 5, { spdMin: 1, spdMax: 2.8, szMin: 1, szMax: 3, color: ['#ffe6a0', '#fff'], decay: 0.08 });
         }
-      } else if (a.weapon === 'dagger') {           // 匕首:两段快速短刺
-        const pulse = Math.abs(Math.sin(t * Math.PI * 2));
-        const [x0, y0] = pt(dir, 10), [x1, y1] = pt(dir, reach * (0.5 + 0.5 * pulse));
-        ctx.strokeStyle = 'rgba(220,240,255,0.9)'; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-        ctx.fillStyle = 'rgba(255,255,255,0.95)';
-        ctx.beginPath(); ctx.arc(x1, y1, 2.4, 0, Math.PI * 2); ctx.fill();
-      } else if (a.weapon === 'sword') {            // 铁剑:横向大挥砍弧
+      } else if (arche === 'dagger') {           // 匕首:快速双段突刺,短刃随手前刺再收回
+        const stab = Math.abs(Math.sin(t * Math.PI * 2));   // 两次突刺峰值(t≈0.25 / 0.75)
+        const dist = 12 + stab * (reach - 12) * 0.82;
+        const [wx, wy] = pt(dir, dist);
+        const [x0, y0] = pt(dir, 8);
+        // 突刺白光拖线
+        ctx.strokeStyle = `rgba(220,240,255,${0.28 + 0.55 * stab})`;
+        ctx.lineWidth = 2 + stab * 1.6;
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(wx, wy); ctx.stroke();
+        // 匕首本体:刃尖指向目标
+        drawWeaponIconRot(wx, wy, a.weapon, 15, dir + Math.PI / 2);
+        // 刺到位:刃尖爆一点白火花
+        if (stab > 0.8) {
+          const [tx, ty] = pt(dir, dist + 6);
+          ctx.fillStyle = `rgba(255,255,255,${(stab - 0.8) * 4})`;
+          ctx.beginPath(); ctx.arc(tx, ty, 2.6, 0, Math.PI * 2); ctx.fill();
+        }
+      } else if (arche === 'sword') {            // 铁剑/太刀:大范围横向挥砍,长刃随弧扫过
         const SW = 1.15, cur = dir - SW + t * 2 * SW;
         drawSlashArc(sx, sy, reach, cur, 0.7, 'rgba(255,255,255,', 4, t);
-      } else if (a.weapon === 'greatsword') {       // 巨剑:360° 旋风斩(偏蓝更厚)
+        // 剑身骑在挥砍弧上,刃朝外
+        const [wx, wy] = pt(cur, reach * 0.72);
+        drawWeaponIconRot(wx, wy, a.weapon, 22, cur + Math.PI / 2);
+      } else if (arche === 'greatsword') {       // 巨剑/龙刃:360° 旋风斩,阔刃绕身旋转
         const cur = dir + t * Math.PI * 2;
-        drawSlashArc(sx, sy, reach, cur, 1.1, 'rgba(150,200,255,', 6, t);
-      } else if (a.weapon === 'axe' || a.weapon === 'hammer') { // 斧/锤:过顶下劈 + 落地震波
-        const heavy = a.weapon === 'hammer';
+        drawSlashArc(sx, sy, reach, cur, 1.1, legendary ? 'rgba(255,190,120,' : 'rgba(150,200,255,', 6, t);
+        const [wx, wy] = pt(cur, reach * 0.6);
+        drawWeaponIconRot(wx, wy, a.weapon, 28, cur + Math.PI / 2);
+      } else if (arche === 'axe' || arche === 'hammer') { // 斧/锤:过顶下劈 + 落地震波
+        const heavy = arche === 'hammer';
         const e = t * t * (3 - 2 * t);              // smoothstep 缓出
-        const cur = dir - Math.PI * 0.95 + e * (Math.PI * 0.95);
-        const [hx, hy] = pt(cur, reach * 0.95);
-        ctx.strokeStyle = heavy ? 'rgba(200,210,225,0.95)' : 'rgba(210,220,235,0.9)';
-        ctx.lineWidth = heavy ? 7 : 5;
-        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(hx, hy); ctx.stroke();
-        ctx.fillStyle = heavy ? '#aab2c0' : '#b8c0cc';
-        ctx.beginPath(); ctx.arc(hx, hy, heavy ? 7 : 5, 0, Math.PI * 2); ctx.fill();
-        if (!a.impacted && t >= 0.6) {              // 命中落地(一次):震波 + 屏震 + 尘土
+        const start = dir - Math.PI * 0.95;
+        const cur = start + e * (Math.PI * 0.95);   // 从头顶后方划到正前方
+        // 挥砍残影弧(表现砸下的轨迹)
+        ctx.strokeStyle = heavy ? 'rgba(255,210,140,0.28)' : 'rgba(210,225,245,0.30)';
+        ctx.lineWidth = heavy ? 6 : 4;
+        ctx.beginPath(); ctx.arc(sx, sy, reach * 0.85, start, cur); ctx.stroke();
+        // 斧/锤本体:头部朝挥砍方向,沿弧砸下
+        const [hx, hy] = pt(cur, reach * 0.85);
+        drawWeaponIconRot(hx, hy, a.weapon, heavy ? 28 : 24, cur + Math.PI / 2);
+        if (!a.impacted && t >= 0.62) {             // 命中落地(一次):震波 + 屏震 + 尘土
           a.impacted = true;
           const wx = p.x + Math.cos(dir) * reach * 0.85, wy = p.y + Math.sin(dir) * reach * 0.85;
           shockwaves.push({ x: wx, y: wy, r: heavy ? 6 : 4, max: heavy ? 70 : 48, life: 1,
@@ -1569,13 +1891,17 @@
           spawnParticles(wx, wy, heavy ? 14 : 8, { spdMin: 1.5, spdMax: heavy ? 5 : 3.5,
             szMin: 2, szMax: heavy ? 5 : 4, color: ['#b8a07a', '#8a6a3a', '#d8c8a0'], decay: 0.05, gravity: 0.15 });
         }
-      } else if (a.weapon === 'staff') {            // 法杖:蓄力辉光 → 释放飞行法球
-        const [gx, gy] = pt(dir, 16);
+      } else if (arche === 'staff') {            // 法杖/符文杖:举杖蓄力 → 杖顶辉光 → 释放法球
+        const bob = Math.sin(Math.min(1, t) * Math.PI) * 4; // 举杖的轻微起伏
+        const [gx, gy] = pt(dir, 18);
+        const tilt = Math.cos(dir) >= 0 ? 0.4 : -0.4;        // 向朝向侧微倾
+        drawWeaponIconRot(gx, gy - bob, a.weapon, 22, tilt);
         const glow = t < 0.35 ? t / 0.35 : Math.max(0, 1 - (t - 0.35) / 0.3);
         if (glow > 0) {
-          const g = ctx.createRadialGradient(gx, gy, 0, gx, gy, 10 * glow + 3);
-          g.addColorStop(0, 'rgba(210,170,255,0.9)'); g.addColorStop(1, 'rgba(176,107,255,0)');
-          ctx.fillStyle = g; ctx.beginPath(); ctx.arc(gx, gy, 10 * glow + 3, 0, Math.PI * 2); ctx.fill();
+          const col = legendary ? 'rgba(120,220,255,' : 'rgba(210,170,255,'; // 符文杖偏青
+          const g = ctx.createRadialGradient(gx, gy - bob, 0, gx, gy - bob, 12 * glow + 3);
+          g.addColorStop(0, col + (0.9 * glow) + ')'); g.addColorStop(1, col + '0)');
+          ctx.fillStyle = g; ctx.beginPath(); ctx.arc(gx, gy - bob, 12 * glow + 3, 0, Math.PI * 2); ctx.fill();
         }
         if (!a.fired && t >= 0.35) { a.fired = true; spawnProjectile(p.x, p.y, dir, 'orb'); }
       }
@@ -1774,8 +2100,8 @@
       if (p.attackAnim) drawWeaponAttack(p, sx, sy);
       else if (p.weapon && p.weapon !== 'fist' && !p.isDead) drawHeldWeapon(p, sx, sy, R);
 
-      // Name tag
-      const name = p.name || `P${id}`;
+      // Name tag(带等级前缀 Lv.n)
+      const name = `${p.level ? `Lv.${p.level} ` : ''}${p.name || `P${id}`}`;
       ctx.font = `bold 11px Courier New`;
       ctx.textAlign = 'center';
       const tw = ctx.measureText(name).width;
@@ -1785,8 +2111,18 @@
       ctx.fillStyle = '#000010';
       ctx.fillRect(sx - tw / 2 - 5, nameY - 11, tw + 10, 14);
       ctx.restore();
+      // 等级前缀用金色高亮,名字用身份色
+      const lvTag = p.level ? `Lv.${p.level} ` : '';
+      const lvW = ctx.measureText(lvTag).width;
+      if (lvTag) {
+        ctx.fillStyle = '#ffd23f';
+        ctx.textAlign = 'left';
+        ctx.fillText(lvTag, sx - tw / 2, nameY);
+      }
+      ctx.textAlign = 'left';
       ctx.fillStyle = isMe ? '#4ecca3' : '#e8e8e8';
-      ctx.fillText(name, sx, nameY);
+      ctx.fillText(p.name || `P${id}`, sx - tw / 2 + lvW, nameY);
+      ctx.textAlign = 'center';
 
       // HP bar
       const bW = 38, bH = 4;
@@ -1821,6 +2157,12 @@
 
       const sx = mw / mapWidth, sy = mh / mapHeight;
 
+      // 难度带:彩色半透明竖带(在障碍物/雾之下)
+      for (const z of zones) {
+        mmCtx.fillStyle = hexToRgba(z.color, 0.35);
+        mmCtx.fillRect(z.bounds.x * sx, z.bounds.y * sy, z.bounds.w * sx, z.bounds.h * sy);
+      }
+
       // 障碍物:树=绿点,石=灰点(按视觉尺寸缩放)
       for (const o of obstacles) {
         if (o.type === 'tree') {
@@ -1854,7 +2196,10 @@
 
       // Players
       // Enemies on minimap (colored by kind)
-      const ENEMY_MM_COLOR = { slime: '#43e1b3', skeleton: '#8b9bb4', demon: '#e84537' };
+      const ENEMY_MM_COLOR = {
+        slime: '#43e1b3', skeleton: '#8b9bb4', demon: '#e84537',
+        orc: '#6fae4a', wraith: '#9d7bd8', golem: '#8a8f9c', dragon: '#e0663a',
+      };
       for (const e of Object.values(enemies)) {
         if (e.isDead) continue;
         const ex = (e.targetX ?? e.x) * sx;
@@ -1886,6 +2231,18 @@
       mmCtx.strokeStyle = '#2a5a8a';
       mmCtx.lineWidth = 1;
       mmCtx.strokeRect(0, 0, mw, mh);
+    }
+
+    // ─── 顶部经验条 ────────────────────────────────────────────
+    function updateXpBar() {
+      const me = players[myId];
+      if (!me) return;
+      const lv = me.level || 1;
+      const xp = me.xp || 0;
+      const need = me.xpToNext || 1;
+      const pct = Math.max(0, Math.min(100, (xp / need) * 100));
+      xpFillEl.style.width = pct.toFixed(1) + '%';
+      xpLabelEl.innerHTML = `<b>LV.${lv}</b> &nbsp; ${xp} / ${need} EXP`;
     }
 
     // ─── Render loop ──────────────────────────────────────────
@@ -1930,6 +2287,10 @@
       for (let y = oy; y < H; y += gs) {
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
       }
+
+      // 难度带:地面着色 + 分隔线 + 带名/推荐等级(在装饰物与实体之下)
+      drawZones();
+      updateZoneBanner();
 
       // Map boundary glow
       const bx = -camera.x, by = -camera.y;
@@ -2031,11 +2392,15 @@
       // ── Weather overlay (屏幕空间,不随震动/摄像机移动) ──────────
       drawWeather(W, H);
 
+      // ── 进带横幅(屏幕空间,顶部中央) ─────────────────────────
+      drawZoneBanner(W);
+
       // ── HUD ─────────────────────────────────────────────────
       const aliveEnemies = Object.values(enemies).filter(e => !e.isDead).length;
       const myW = WEAPONS[players[myId]?.weapon] || WEAPONS.fist;
       const wCol = RARITY_COLOR[myW.rarity] || '#eee';
-      statsEl.innerHTML = `PING: ${latency}ms  ·  PLAYERS: ${Object.keys(players).length}  ·  ENEMIES: ${aliveEnemies}  ·  ${weatherLabel(weather.kind)}  ·  <span style="color:${wCol}">⚔ ${myW.label}</span>`;
+      const myLv = players[myId]?.level || 1;
+      statsEl.innerHTML = `PING: ${latency}ms  ·  <span style="color:#ffd23f">LV.${myLv}</span>  ·  PLAYERS: ${Object.keys(players).length}  ·  ENEMIES: ${aliveEnemies}  ·  ${weatherLabel(weather.kind)}  ·  <span style="color:${wCol}">⚔ ${myW.label}</span>`;
 
       drawMinimap();
     }

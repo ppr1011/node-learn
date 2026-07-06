@@ -93,6 +93,28 @@ export class CombatSystem {
       player.session.send(MsgType.ENEMY_DEAD, deadMsg);
       for (const other of nearby) other.session.send(MsgType.ENEMY_DEAD, deadMsg);
 
+      // 击杀 → 获得经验;满级则升级(可能连升),回满血 + 增强属性
+      const levelsGained = player.gainXp(enemyTarget.xpReward);
+      player.session.send(MsgType.XP_GAIN, {
+        id: player.id,
+        gained: enemyTarget.xpReward,
+        xp: player.xp,
+        xpToNext: player.xpToNext,
+        level: player.level,
+      });
+      if (levelsGained > 0) {
+        const lvMsg = {
+          id: player.id,
+          level: player.level,
+          hp: player.hp,
+          maxHp: player.maxHp,
+          xp: player.xp,
+          xpToNext: player.xpToNext,
+        };
+        player.session.send(MsgType.LEVEL_UP, lvMsg);
+        for (const other of nearby) other.session.send(MsgType.LEVEL_UP, lvMsg);
+      }
+
       // 击杀 → 按几率掉落武器(强敌 luck 更高,更易出稀有/史诗)
       this.world.spawnWeaponDrop(enemyTarget);
 

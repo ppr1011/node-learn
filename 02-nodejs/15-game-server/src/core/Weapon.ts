@@ -8,8 +8,11 @@
  * 该素材包不含弓/矛,故用「匕首/剑/巨剑/斧/锤/法杖」六件,覆盖 快/均衡/重/超重/旋风/远程 的手感谱系。
  */
 
-export type WeaponKind = 'fist' | 'dagger' | 'sword' | 'greatsword' | 'axe' | 'hammer' | 'staff';
-export type Rarity = 'common' | 'rare' | 'epic';
+export type WeaponKind =
+  | 'fist' | 'dagger' | 'sword' | 'greatsword' | 'axe' | 'hammer' | 'staff'
+  // 深层带掉落的高阶武器(客户端复用既有攻击动画,见 client 的 ANIM_OF)
+  | 'katana' | 'battleaxe' | 'warhammer' | 'runestaff' | 'dragonblade';
+export type Rarity = 'common' | 'rare' | 'epic' | 'legendary';
 
 export interface WeaponStats {
   label: string; // 中文名(客户端 HUD 显示)
@@ -29,6 +32,12 @@ export const WEAPONS: Record<WeaponKind, WeaponStats> = {
   axe: { label: '战斧', damage: 34, range: 95, cooldown: 1400, rarity: 'rare', dropWeight: 12 },
   hammer: { label: '战锤', damage: 42, range: 100, cooldown: 1700, rarity: 'epic', dropWeight: 6 },
   staff: { label: '法杖', damage: 26, range: 240, cooldown: 1150, rarity: 'epic', dropWeight: 8 },
+  // ── 高阶武器(深层带 luck 高时才有意义地掉出;客户端动画复用同手感的基础武器) ──
+  katana: { label: '太刀', damage: 28, range: 105, cooldown: 650, rarity: 'rare', dropWeight: 10 },
+  battleaxe: { label: '战斧', damage: 50, range: 100, cooldown: 1500, rarity: 'epic', dropWeight: 5 },
+  warhammer: { label: '战锤·雷霆', damage: 68, range: 105, cooldown: 1900, rarity: 'legendary', dropWeight: 2 },
+  runestaff: { label: '符文杖', damage: 44, range: 260, cooldown: 1050, rarity: 'legendary', dropWeight: 2 },
+  dragonblade: { label: '龙刃', damage: 60, range: 130, cooldown: 1100, rarity: 'legendary', dropWeight: 3 },
 };
 
 /** 可掉落的武器种类(排除 fist) */
@@ -37,13 +46,17 @@ export const DROPPABLE: WeaponKind[] = (Object.keys(WEAPONS) as WeaponKind[]).fi
 );
 
 /**
- * 加权随机掉一件武器。luck > 1 时提高稀有/史诗权重(强敌掉好货)。
- * @param luck 幸运系数:common 权重恒定,rare×luck,epic×luck²。
+ * 加权随机掉一件武器。luck > 1 时提高稀有/史诗/传说权重(强敌掉好货)。
+ * @param luck 幸运系数:common 权重恒定,rare×luck,epic×luck²,legendary×luck³。
+ *             → 传说仅在深层带(luck≈2.6)经三次方放大后才有可观概率。
  */
 export function rollWeaponDrop(luck = 1): WeaponKind {
   const weightOf = (k: WeaponKind): number => {
     const w = WEAPONS[k];
-    const mult = w.rarity === 'epic' ? luck * luck : w.rarity === 'rare' ? luck : 1;
+    const mult =
+      w.rarity === 'legendary' ? luck * luck * luck :
+      w.rarity === 'epic' ? luck * luck :
+      w.rarity === 'rare' ? luck : 1;
     return w.dropWeight * mult;
   };
   const total = DROPPABLE.reduce((s, k) => s + weightOf(k), 0);

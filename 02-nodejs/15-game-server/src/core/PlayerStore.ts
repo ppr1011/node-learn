@@ -23,6 +23,8 @@ export interface PersistedPlayer {
   maxHp: number;
   weapon: WeaponKind;
   facing: number;
+  level: number;
+  xp: number;
   explored: string; // base64 编码的迷雾探索位图
   savedAt: number;
 }
@@ -55,6 +57,8 @@ export class PlayerStore {
       maxHp: player.maxHp,
       weapon: player.weapon,
       facing: player.facing,
+      level: player.level,
+      xp: player.xp,
       explored: player.exploration.toBase64(),
       savedAt: Date.now(),
     });

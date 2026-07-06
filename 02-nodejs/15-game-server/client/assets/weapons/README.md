@@ -13,6 +13,14 @@
 | `axe.png` | tile_0118 | 双刃斧 | rare | 过顶劈斩 + 落地震波环 |
 | `hammer.png` | tile_0117 | 战锤 | epic | 过顶重砸 + 强屏震 + 尘土 |
 | `staff.png` | tile_0129 | 法杖(紫顶) | epic | 飞行法球投射物 + 命中魔法环 |
+| `katana.png` | tile_0105 | 太刀(弯刃) | rare | 复用铁剑横砍(见 `ANIM_OF`) |
+| `battleaxe.png` | tile_0119 | 战斧 | epic | 复用战斧劈斩 |
+| `warhammer.png` | tile_0107 | 战锤·雷霆(重槌) | legendary | 复用战锤重砸 |
+| `runestaff.png` | tile_0130 | 符文杖(青晶顶) | legendary | 复用法杖法球 |
+| `dragonblade.png` | tile_0106 | 龙刃(阔剑) | legendary | 复用巨剑旋风斩 |
+
+> 深层带 5 件高阶武器同样取自本素材包:图标为专属 tile,攻击动画则通过客户端 `ANIM_OF`
+> 复用同手感的基础武器分支(零新增动画代码),稀有度颜色负责区分。
 
 **尺寸**：均为 16×16 RGBA，客户端 `imageSmoothingEnabled = false` 放大绘制以保持像素风。
 **兜底**：缺任一文件时客户端自动回退到程序化图标(见 `client/index.html` 的 `getProcWeapon`)。

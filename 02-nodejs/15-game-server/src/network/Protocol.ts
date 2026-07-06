@@ -24,6 +24,10 @@ export enum MsgType {
   ENEMY_HIT = 's_enemy_hit',
   ENEMY_DEAD = 's_enemy_dead',
 
+  // 等级 / 经验(击杀敌人获得经验;升级时额外广播供他人展示与特效)
+  XP_GAIN = 's_xp',
+  LEVEL_UP = 's_levelup',
+
   // Combat animation (每次攻击都广播,空挥也播动画;命中反馈仍走 DAMAGE/ENEMY_HIT)
   ATTACK = 's_attack',
 

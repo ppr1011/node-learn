@@ -55,11 +55,8 @@ export class GameWebSocketServer {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // 限流检查
-    if (!session.checkRate()) {
-      session.send(MsgType.ERROR, { msg: 'Rate limit exceeded' });
-      return;
-    }
+    // 限流检查:静默丢弃,不回传 ERROR 避免客户端日志刷屏
+    if (!session.checkRate()) return;
 
     session.markActivity();
 
