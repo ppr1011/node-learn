@@ -76,9 +76,33 @@ export const GameConfig = {
   LLM_API_KEY: process.env.DEEPSEEK_API_KEY ?? process.env.LLM_API_KEY ?? '',
   LLM_MODEL: process.env.LLM_MODEL ?? 'deepseek-v4-flash',
   LLM_DECISION_INTERVAL_MS: 4000, // 定时战术刷新间隔(聊天可立即触发)
+  // ── 省 token:只有「有玩家在场/跟随」才调用 LLM;情形不变则拉长间隔 ──
+  LLM_ENGAGE_RANGE_MULT: 1.5,   // 玩家进入 detectionRange×该倍数才算「在场」,值得思考
+  LLM_STATIC_HOLD_MULT: 3,      // 情形未变时,决策保持 间隔×该倍数 才重算(静态场景省 ~2/3 调用)
+  LLM_MAX_OUTPUT_TOKENS: 160,   // 云端单次决策输出上限(JSON 很小,无需 400)
+
+  // ── 分层路由:战术场景改用本地 Ollama 小模型(省云端 token),对话仍走云端 ──
+  // 默认关闭;需先 `ollama pull deepseek-r1:14b` 并 `ollama serve`,再置 LLM_LOCAL_ENABLED=1
+  LLM_LOCAL_ENABLED: process.env.LLM_LOCAL_ENABLED === '1',
+  LLM_LOCAL_URL: process.env.LLM_LOCAL_URL ?? 'http://localhost:11434/v1/chat/completions',
+  LLM_LOCAL_MODEL: process.env.LLM_LOCAL_MODEL ?? 'mistral',
+  LLM_LOCAL_MAX_TOKENS: 200,    // mistral 非推理模型,输出仅小 JSON,无需大预算(换回 R1 类需调大到 ~1024 容纳思维链)
+  LLM_LOCAL_TIMEOUT_MS: 20000,  // 本地推理慢,超时即回退 Mock,保证不卡住游戏循环
   LLM_NPC_COUNT: 2,             // 新手草原固定刷几只 LLM 守卫
   LLM_MEMORY_MAX: 16,           // 每个 NPC episodic 记忆条数上限
   LLM_QUEST_DEFAULT_COUNT: 3,   // 默认委托击杀数量
   LLM_QUEST_REWARD_XP: 35,      // 委托完成基础经验
   LLM_RUMOR_MAX: 8,             // 每个难度带传闻条数上限
+
+  // 昼夜日程(功能7):一整天压缩为 DAY_CYCLE_MS 真实时长,循环推进 黎明→白天→黄昏→夜晚
+  DAY_CYCLE_MS: 240000,         // 4 分钟一整天(调小便于观察)
+  NIGHT_HOME_RADIUS: 260,       // 夜晚离出生点超过此距离则回巢
+
+  // 玩家身份标签 / 声望(功能8)
+  REPUTATION_RECOMPUTE_MS: 2000, // 全局声望重算节流间隔
+  REPUTATION_SEED_CLAMP: 25,     // 初见态度信任种子的绝对值上限
+
+  // 多 Agent 协作 / 小队(功能9)
+  SQUAD_RADIUS: 320,            // 组队所需的 NPC 相互靠近半径
+  SQUAD_ANNOUNCE_COOLDOWN_MS: 12000, // leader 播报协调台词的冷却
 } as const;

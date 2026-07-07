@@ -3,6 +3,7 @@
  */
 
 import { LLMDirective, LLMGameSnapshot, LLMIntent } from './types';
+import { GameConfig } from '../../config';
 import { logger } from '../../utils/Logger';
 
 const VALID_INTENTS: LLMIntent[] = ['attack', 'flee', 'patrol', 'taunt', 'hunt', 'follow'];
@@ -86,105 +87,174 @@ function normalizeIntent(value: unknown): LLMIntent | null {
   return VALID_INTENTS.includes(v) ? v : null;
 }
 
-/** 从 Chat Completions 响应体提取文本(兼容 reasoning 字段) */
+/**
+ * 去掉推理模型(DeepSeek-R1 等)内联的思维链 <think>…</think>,只留最终答案。
+ * 未闭合的 <think>(输出被 max_tokens 截断)视为「只有思考、无有效答案」→ 返回空串。
+ */
+function stripThink(text: string): string {
+  let s = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  const open = s.search(/<think>/i);
+  if (open >= 0) s = s.slice(0, open); // 截断的思考,丢弃
+  return s.trim();
+}
+
+/** 从 Chat Completions 响应体提取文本(兼容 reasoning 字段 + R1 内联思维链) */
 function extractMessageContent(body: Record<string, unknown>): string {
   const choices = body.choices as Array<{ message?: Record<string, unknown> }> | undefined;
   const msg = choices?.[0]?.message;
   if (!msg) return '';
 
   const content = msg.content;
-  if (typeof content === 'string' && content.trim()) return content.trim();
+  if (typeof content === 'string') {
+    const cleaned = stripThink(content);
+    if (cleaned) return cleaned;
+  }
 
+  // DeepSeek 官方 reasoner:思考在 reasoning_content,答案在 content;content 空才回退
   const reasoning = msg.reasoning_content;
-  if (typeof reasoning === 'string' && reasoning.trim()) return reasoning.trim();
+  if (typeof reasoning === 'string') {
+    const cleaned = stripThink(reasoning);
+    if (cleaned) return cleaned;
+  }
 
   return '';
 }
 
-function buildSystemPrompt(): string {
-  return [
-    '你是 MMO 游戏里的一名 NPC Agent。你必须只输出一个 JSON 对象,禁止 markdown、禁止解释文字。',
-    '必填字段 intent,取值只能是: attack flee patrol taunt hunt follow (小写英文)。',
-    '可选字段 speech(中文≤30字) reason(中文≤20字)。',
-    '示例:{"intent":"patrol","speech":"你好,冒险者。","reason":"无威胁"}',
-    '规则:高信任友善;曾承诺不攻击则勿 attack;残血 flee;说跟着用 follow;附近怪 hunt。',
-  ].join('\n');
-}
+// 系统提示为常量(每次请求相同),避免重复拼接;DeepSeek 对稳定前缀可命中上下文缓存
+const SYSTEM_PROMPT = [
+  '你是 MMO 游戏里的一名 NPC Agent。只输出一个 JSON 对象,禁止 markdown 与解释文字。',
+  '必填 intent: attack flee patrol taunt hunt follow(小写)。可选 speech(中文≤30字) reason(≤20字)。',
+  '无玩家对话时通常省略 speech(仅 taunt/打招呼才说话),尽量精简输出。',
+  '示例:{"intent":"patrol","reason":"无威胁"}',
+  '规则:高信任友善;曾承诺不攻击勿 attack;残血 flee;邀请跟随用 follow;附近怪 hunt。',
+  '玩家名后 [英雄]/[屠夫] 为全局声望,据此定初见语气;夜晚倾向回巢少战;',
+  '小队分工:striker 强攻 / flanker 包抄 / bait 引怪,台词体现协作。',
+].join('\n');
 
+/**
+ * 用户提示分两档,按是否有玩家对话切换,省 token:
+ * - 战术刷新(无对话):只带即时战况 + 少量近况,丢弃关系/经历/传闻等长上下文
+ * - 社交(有对话):带完整人格上下文以求扮演到位,但各列表限量截断
+ */
 function buildUserPrompt(s: LLMGameSnapshot): string {
   const players = s.nearbyPlayers
-    .map((p) => `${p.name}(距${Math.round(p.distance)}px,HP${p.hp}/${p.maxHp})`)
+    .map((p) => `${p.name}${p.tag ? `[${p.tag}]` : ''}(距${Math.round(p.distance)}px,HP${p.hp}/${p.maxHp})`)
     .join(', ') || '无';
-  const chat = s.chatText ? `玩家${s.chatFrom}说:「${s.chatText}」` : '';
-  const mem = s.memoryRecent.length > 0
-    ? `近期记忆:\n${s.memoryRecent.map((l) => `- ${l}`).join('\n')}`
-    : '近期记忆:无';
-  const rel = s.playerRelations.length > 0
-    ? `玩家关系:\n${s.playerRelations.map((l) => `- ${l}`).join('\n')}`
-    : '玩家关系:无';
-  const archives = s.memoryArchives.length > 0
-    ? `人生经历:\n${s.memoryArchives.map((l) => `- ${l}`).join('\n')}`
+  const squad = s.squad
+    ? `小队协作:你的分工是 ${s.squad.role},队友 ${s.squad.allies.join('、') || '无'},共同目标 ${s.squad.target}`
     : '';
-  const rumors = s.zoneRumors.length > 0
-    ? `区域传闻:\n${s.zoneRumors.map((l) => `- ${l}`).join('\n')}`
-    : '';
-  return [
+  const head = [
     `NPC:${s.npcName}(${s.kind}),性格:${s.personality}`,
-    `自身:HP ${s.hp}/${s.maxHp},状态 ${s.aiState},心情 ${s.moodLabel},坐标(${s.x},${s.y}),区域 ${s.zoneName},天气 ${s.weather}`,
+    `自身:HP ${s.hp}/${s.maxHp},状态 ${s.aiState},心情 ${s.moodLabel},区域 ${s.zoneName},天气 ${s.weather},时段 ${s.timeOfDay}`,
     `附近玩家:${players}`,
     `附近怪物数量:${s.nearbyMobCount}`,
     `正在跟随玩家:${s.isFollowing ? '是' : '否'}`,
+    squad,
     s.activeQuest ? `进行中委托:${s.activeQuest}` : '',
-    mem,
-    rel,
-    archives,
-    rumors,
-    chat,
+  ];
+
+  // 战术刷新:精简上下文,只留 2 条近况维持连贯
+  if (!s.chatText) {
+    const near = s.memoryRecent.slice(-2);
+    return [...head, near.length ? `近况:${near.join(' / ')}` : ''].filter(Boolean).join('\n');
+  }
+
+  // 社交:带完整人格上下文,列表限量
+  const list = (title: string, arr: string[]) =>
+    arr.length ? `${title}:\n${arr.map((l) => `- ${l}`).join('\n')}` : '';
+  return [
+    ...head,
+    list('近期记忆', s.memoryRecent.slice(-6)),
+    list('玩家关系', s.playerRelations.slice(0, 3)),
+    list('人生经历', s.memoryArchives.slice(-2)),
+    list('区域传闻', s.zoneRumors.slice(-3)),
+    `玩家${s.chatFrom}说:「${s.chatText}」`,
   ].filter(Boolean).join('\n');
 }
 
-/** DeepSeek / OpenAI 兼容 Chat Completions */
+export interface HttpProviderOptions {
+  label: string;        // 日志标识(cloud / local)
+  apiUrl: string;
+  model: string;
+  maxTokens: number;
+  apiKey?: string;      // 本地 Ollama 无需鉴权
+  timeoutMs?: number;   // 本地模型慢,超时即回退 Mock,避免阻塞后续决策
+}
+
+/**
+ * DeepSeek / OpenAI / Ollama 兼容 Chat Completions。
+ * 云端与本地共用此类,差异仅在 options(URL / key / 模型 / token 预算 / 超时)。
+ * 任何传输或解析失败都自愈到 Mock 规则引擎,保证游戏永不因 LLM 卡住。
+ */
 export class OpenAICompatibleProvider implements LLMProvider {
   private readonly mockFallback = new MockLLMProvider();
 
-  constructor(
-    private readonly apiUrl: string,
-    private readonly apiKey: string,
-    private readonly model: string
-  ) {}
+  constructor(private readonly opts: HttpProviderOptions) {}
 
   async decide(snapshot: LLMGameSnapshot): Promise<LLMDirective> {
     const now = Date.now();
-    const res = await fetch(this.apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        temperature: 0.3,
-        max_tokens: 400,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: buildSystemPrompt() },
-          { role: 'user', content: buildUserPrompt(snapshot) },
-        ],
-      }),
-    });
-    if (!res.ok) {
-      const errBody = await res.text().catch(() => '');
-      throw new Error(`LLM HTTP ${res.status}: ${errBody.slice(0, 200)}`);
-    }
-    const body = (await res.json()) as Record<string, unknown>;
-    const content = extractMessageContent(body);
-    const directive = parseDirective(content, now);
-    if (directive) return directive;
+    const controller = new AbortController();
+    const timer = this.opts.timeoutMs
+      ? setTimeout(() => controller.abort(), this.opts.timeoutMs)
+      : null;
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (this.opts.apiKey) headers.Authorization = `Bearer ${this.opts.apiKey}`;
 
-    logger.warn(
-      `[LLM] 解析失败,回退 Mock | content="${content.slice(0, 100)}"`
-    );
+      const res = await fetch(this.opts.apiUrl, {
+        method: 'POST',
+        headers,
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: this.opts.model,
+          temperature: 0.3,
+          max_tokens: this.opts.maxTokens,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: buildUserPrompt(snapshot) },
+          ],
+        }),
+      });
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}: ${errBody.slice(0, 160)}`);
+      }
+      const body = (await res.json()) as Record<string, unknown>;
+      const content = extractMessageContent(body);
+      const directive = parseDirective(content, now);
+      if (directive) return directive;
+      logger.warn(`[LLM:${this.opts.label}] 解析失败,回退 Mock | content="${content.slice(0, 80)}"`);
+    } catch (err) {
+      // 网络 / 超时 / 非 2xx:降级到 Mock,而非抛出中断决策
+      logger.warn(`[LLM:${this.opts.label}] 调用失败,回退 Mock: ${(err as Error).message}`);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
     return this.mockFallback.decide(snapshot);
+  }
+}
+
+/** 场景分层:有玩家对话=社交(需高质量,走云端);否则=战术(高频低可见,走本地省钱) */
+export type LLMScenario = 'social' | 'tactical';
+export function classifyScenario(s: LLMGameSnapshot): LLMScenario {
+  return s.chatText ? 'social' : 'tactical';
+}
+
+/**
+ * 分层路由 Provider:战术刷新 → 本地小模型(免费);玩家对话 → 云端强模型(质量)。
+ * 玩家看得到的台词用云端保证观感,后台高频的静默战术决策交给本地 Ollama 省 token。
+ */
+export class TieredLLMProvider implements LLMProvider {
+  constructor(
+    private readonly local: LLMProvider,
+    private readonly cloud: LLMProvider
+  ) {}
+
+  decide(snapshot: LLMGameSnapshot): Promise<LLMDirective> {
+    return classifyScenario(snapshot) === 'social'
+      ? this.cloud.decide(snapshot)
+      : this.local.decide(snapshot);
   }
 }
 
@@ -293,8 +363,27 @@ export function createLLMProvider(
   apiUrl: string,
   model: string
 ): LLMProvider {
-  if (apiKey) {
-    return new OpenAICompatibleProvider(apiUrl, apiKey, model);
-  }
-  return new MockLLMProvider();
+  // 云端(强模型):有 key 才启用,否则 Mock 规则引擎兜底
+  const cloud: LLMProvider = apiKey
+    ? new OpenAICompatibleProvider({
+        label: 'cloud',
+        apiUrl,
+        apiKey,
+        model,
+        maxTokens: GameConfig.LLM_MAX_OUTPUT_TOKENS,
+      })
+    : new MockLLMProvider();
+
+  if (!GameConfig.LLM_LOCAL_ENABLED) return cloud;
+
+  // 本地(Ollama 小模型):战术场景走它。R1 需较大输出预算容纳思维链,并设超时防卡顿
+  const local = new OpenAICompatibleProvider({
+    label: 'local',
+    apiUrl: GameConfig.LLM_LOCAL_URL,
+    model: GameConfig.LLM_LOCAL_MODEL,
+    maxTokens: GameConfig.LLM_LOCAL_MAX_TOKENS,
+    timeoutMs: GameConfig.LLM_LOCAL_TIMEOUT_MS,
+  });
+  logger.info(`[LLM] 分层路由启用:战术→本地(${GameConfig.LLM_LOCAL_MODEL}) · 对话→${apiKey ? '云端' : 'Mock'}`);
+  return new TieredLLMProvider(local, cloud);
 }

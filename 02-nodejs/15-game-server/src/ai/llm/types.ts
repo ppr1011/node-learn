@@ -35,6 +35,8 @@ export interface LLMGameSnapshot {
     distance: number;
     hp: number;
     maxHp: number;
+    /** 该玩家的全局声望标签(英雄/屠夫…,功能8) */
+    tag?: string;
   }>;
   /** 附近可狩猎的普通怪物数量 */
   nearbyMobCount: number;
@@ -51,4 +53,8 @@ export interface LLMGameSnapshot {
   moodLabel: string;
   zoneRumors: string[];
   activeQuest?: string;
+  /** 当前昼夜时段(功能7) */
+  timeOfDay: string;
+  /** 小队分工(功能9):在队时注入,否则 undefined */
+  squad?: { role: string; allies: string[]; target: string };
 }

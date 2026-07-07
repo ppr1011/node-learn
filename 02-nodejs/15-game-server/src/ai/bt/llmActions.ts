@@ -5,6 +5,7 @@
 import { BTContext, NodeStatus } from './types';
 import { LLMIntent } from '../llm/types';
 import { NpcAgentSystem } from '../agent/NpcAgentSystem';
+import { NpcSchedule } from '../agent/schedule';
 import { GameConfig } from '../../config';
 import { MsgType } from '../../network/Protocol';
 import { Enemy } from '../../core/Enemy';
@@ -191,12 +192,65 @@ export function attackMob(ctx: BTContext): NodeStatus {
   return 'success';
 }
 
-/** NPC 追击普通怪物 */
+/** 找到本小队的 striker(leader) */
+function squadLeader(ctx: BTContext): Enemy | null {
+  const { enemy, world } = ctx;
+  if (enemy.squadId === null) return null;
+  for (const other of world.enemies.values()) {
+    if (other.squadId === enemy.squadId && other.squadRole === 'striker') return other;
+  }
+  return null;
+}
+
+/** NPC 追击普通怪物;在小队中按分工改移动目标点(flanker 包抄 / bait 拉仇恨,功能9) */
 export function chaseMob(ctx: BTContext): NodeStatus {
-  const { enemy, mobTarget } = ctx;
+  const { enemy, mobTarget, now } = ctx;
   if (!mobTarget || mobTarget.isDead) return 'failure';
   enemy.aiState = 'chase';
-  moveToward(enemy, mobTarget.position.x, mobTarget.position.y, enemy.speed);
+
+  let tx = mobTarget.position.x;
+  let ty = mobTarget.position.y;
+
+  if (enemy.squadRole === 'flanker') {
+    // 绕到怪相对 leader 的「远侧」:沿 leader→怪 方向延伸到怪身后,形成两翼包抄
+    const leader = squadLeader(ctx);
+    if (leader && leader.id !== enemy.id) {
+      const dx = mobTarget.position.x - leader.position.x;
+      const dy = mobTarget.position.y - leader.position.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const FLANK = 72;
+      tx = mobTarget.position.x + (dx / d) * FLANK;
+      ty = mobTarget.position.y + (dy / d) * FLANK;
+    }
+  } else if (enemy.squadRole === 'bait') {
+    // bait 直冲并主动拉仇恨,替队友吸引怪的注意
+    provokeAggro(mobTarget, enemy, now);
+  }
+
+  moveToward(enemy, tx, ty, enemy.speed);
+  return 'running';
+}
+
+/** 夜晚回巢:远离出生点且非跟随/逃跑时,朝出生点缓步撤回(功能7) */
+export function shouldReturnHome(ctx: BTContext): boolean {
+  const { enemy, world } = ctx;
+  if (!enemy.llmEnabled) return false;
+  if (enemy.followPlayerId !== null) return false;
+  if (enemy.llmDirective?.intent === 'flee') return false;
+  if (!NpcSchedule.biasFor(world.dayPhase).homebound) return false;
+  const d = dist(enemy.position.x, enemy.position.y, enemy.spawnX, enemy.spawnY);
+  return d > GameConfig.NIGHT_HOME_RADIUS;
+}
+
+export function returnHome(ctx: BTContext): NodeStatus {
+  const { enemy } = ctx;
+  enemy.aiState = 'patrol';
+  moveToward(enemy, enemy.spawnX, enemy.spawnY, enemy.speed * 0.6);
+  const d = dist(enemy.position.x, enemy.position.y, enemy.spawnX, enemy.spawnY);
+  if (d <= GameConfig.NIGHT_HOME_RADIUS * 0.5) {
+    enemy.aiState = 'idle';
+    enemy.velocity = { x: 0, y: 0 };
+  }
   return 'running';
 }
 
@@ -237,6 +291,8 @@ export function shouldHuntMob(ctx: BTContext): boolean {
   if (llmWantsHunt(ctx) || ctx.enemy.followPlayerId !== null) {
     return acquireMobTarget(ctx);
   }
+  // 夜晚回巢休整:不主动清怪(跟随 / 显式 hunt 已在上面放行)
+  if (!NpcSchedule.biasFor(ctx.world.dayPhase).huntAllowed) return false;
   for (const p of ctx.world.players.values()) {
     if (p.isDead) continue;
     if (NpcAgentSystem.trustPartnerHunt(ctx.enemy, p.name)) {

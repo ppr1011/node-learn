@@ -14,6 +14,8 @@ import { CombatSystem } from '../systems/CombatSystem';
 import { EnemyAISystem } from '../systems/EnemyAISystem';
 import { NpcAgentSystem } from '../ai/agent/NpcAgentSystem';
 import { RumorEntry } from '../ai/agent/rumor';
+import { DayPhase, phaseAt } from '../ai/agent/schedule';
+import { PlayerReputation } from '../ai/agent/reputation';
 import { GameConfig } from '../config';
 import { logger } from '../utils/Logger';
 import { MsgType } from '../network/Protocol';
@@ -47,6 +49,10 @@ export class GameWorld {
   readonly enemyAI: EnemyAISystem;
   readonly npcAgent: NpcAgentSystem;
   rumorBoard?: Map<number, RumorEntry[]>;
+  // 昼夜相位(功能7):每 tick 由世界时钟推进,变更时广播
+  dayPhase: DayPhase = 'day';
+  // 玩家全局声望标签(功能8):由 Reputation.recompute 周期写入
+  readonly playerTags: Map<string, PlayerReputation> = new Map();
 
   constructor() {
     this.aoi = new AOIManager(
@@ -108,6 +114,7 @@ export class GameWorld {
 
     // 初始天气(dynamic:运行时随机,服务端权威)
     this.weather = this.rollWeather();
+    this.dayPhase = phaseAt(Date.now(), GameConfig.DAY_CYCLE_MS).phase;
 
     this.movement = new MovementSystem(this);
     this.chat = new ChatSystem(this);
@@ -140,6 +147,15 @@ export class GameWorld {
       this.weatherTimer = null;
     }
     logger.info('GameWorld stopped');
+  }
+
+  /** 昼夜时钟:算当前相位,切换时广播 s_time(功能7) */
+  private updateDayNight(now: number): void {
+    const { phase } = phaseAt(now, GameConfig.DAY_CYCLE_MS);
+    if (phase === this.dayPhase) return;
+    this.dayPhase = phase;
+    this.broadcastAll(MsgType.TIME_OF_DAY, { phase, cycleMs: GameConfig.DAY_CYCLE_MS });
+    logger.info(`Day/Night → ${phase}`);
   }
 
   /** 用 dynamic 定义重掷一次全局天气 */
@@ -197,6 +213,7 @@ export class GameWorld {
       enemies: [...this.enemies.values()].map(e => e.toPublicState()),
       drops: [...this.drops.values()].map(d => d.toPublicState()),
       weather: this.weather,
+      timeOfDay: { phase: this.dayPhase, cycleMs: GameConfig.DAY_CYCLE_MS },
       fogGrid: {
         cols: player.exploration.cols,
         rows: player.exploration.rows,
@@ -237,6 +254,9 @@ export class GameWorld {
 
   private tick(deltaMs: number): void {
     const dt = deltaMs / 1000;
+
+    // 昼夜推进(相位切换时广播给所有玩家)
+    this.updateDayNight(Date.now());
 
     // 更新所有玩家的移动 + 揭雾
     for (const player of this.players.values()) {

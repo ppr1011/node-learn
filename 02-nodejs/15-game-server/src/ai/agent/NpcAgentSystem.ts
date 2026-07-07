@@ -6,20 +6,46 @@ import { Enemy } from '../../core/Enemy';
 import { Player } from '../../core/Player';
 import { GameWorld } from '../../core/GameWorld';
 import { MsgType } from '../../network/Protocol';
+import { GameConfig } from '../../config';
 import { NpcMemory } from '../llm/memory';
 import { NpcMood, moodLabel } from './mood';
 import { NpcQuests } from './quest';
 import { RumorBoard } from './rumor';
 import { formatUnlocks, trustOf, unlockedFor } from './relation';
+import { timeLabel } from './schedule';
+import { Reputation } from './reputation';
+import { SquadSystem } from './squad';
 
 export class NpcAgentSystem {
-  constructor(private readonly world: GameWorld) {}
+  private readonly squad: SquadSystem;
+  private lastReputationAt = 0;
+
+  constructor(private readonly world: GameWorld) {
+    this.squad = new SquadSystem(world);
+  }
 
   tick(dt: number): void {
+    const now = Date.now();
+
+    // 全局声望周期重算(功能8,节流)
+    if (now - this.lastReputationAt >= GameConfig.REPUTATION_RECOMPUTE_MS) {
+      Reputation.recompute(this.world);
+      this.lastReputationAt = now;
+    }
+
     for (const enemy of this.world.enemies.values()) {
       if (!enemy.llmEnabled || enemy.isDead) continue;
       NpcMood.tick(enemy, this.world, dt);
+      // 初见即有态度:探测范围内未接触过的玩家,按全局声望播下初始信任(功能8)
+      for (const p of this.world.players.values()) {
+        if (p.isDead) continue;
+        const d = Math.hypot(p.position.x - enemy.position.x, p.position.y - enemy.position.y);
+        if (d <= enemy.detectionRange) Reputation.seedFirstContact(this.world, enemy, p.name, now);
+      }
     }
+
+    // 多 Agent 协作:小队编排(功能9)
+    this.squad.update(now);
   }
 
   handleNpcInfo(player: Player, enemyId: number): void {
@@ -56,6 +82,9 @@ export class NpcAgentSystem {
       archives: enemy.llmArchives.slice(-3),
       rumors: RumorBoard.forZone(this.world, enemy.zoneId, now),
       following: enemy.followPlayerId === player.id,
+      timeOfDay: timeLabel(this.world.dayPhase),
+      playerTag: this.world.playerTags.get(player.name)?.tag ?? '旅人',
+      squadRole: enemy.squadRole,
     });
   }
 

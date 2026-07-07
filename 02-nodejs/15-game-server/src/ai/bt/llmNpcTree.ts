@@ -27,6 +27,8 @@ import {
   inMobAttackRange,
   attackMob,
   chaseMob,
+  shouldReturnHome,
+  returnHome,
 } from './llmActions';
 
 /** LLM NPC 专用树 */
@@ -57,6 +59,7 @@ export function buildLlmNpcTree(kind: EnemyKind): BTNode {
         cond('acquireTarget', acquireTarget),
         act('flee', flee)),
     seq(cond('shouldFollow', shouldFollow), followSubtree),
+    seq(cond('returnHome', shouldReturnHome), act('returnHome', returnHome)),
     seq(cond('shouldHunt', shouldHuntMob), mobCombat),
     seq(cond('llmAttack', shouldAttackPlayer), playerCombat),
     seq(cond('llmPatrol', (c) => hasLlmDirective(c) && llmWantsPatrol(c)), act('patrol', patrol)),

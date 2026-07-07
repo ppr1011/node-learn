@@ -17,6 +17,7 @@ export enum MsgType {
   PLAYER_DEAD = 's_dead',
   PLAYER_RESPAWN = 's_respawn',
   WEATHER = 's_weather',
+  TIME_OF_DAY = 's_time', // 昼夜相位变化(功能7)
   PONG = 's_pong',
   ERROR = 's_error',
 

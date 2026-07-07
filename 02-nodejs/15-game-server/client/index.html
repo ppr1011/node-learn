@@ -508,6 +508,7 @@
     let lastAttackAt = 0; // 本地最近一次成功发起攻击的时间(仅用于冷却环 HUD 估算)
     let frame = 0;        // 渲染帧计数(掉落物浮动/光环脉动用)
     let weather = { kind: 'clear', intensity: 0 }; // 服务端权威下发的全局天气(仅 kind + intensity)
+    let dayPhase = 'day'; // 服务端权威下发的昼夜相位(dawn/day/dusk/night,功能7)
     let lastTime = 0;
     // 天气视觉细节全部在客户端程序化生成(见文件末尾「Weather」章节),
     // 天然随 intensity 缩放,零资源依赖。分层粒子池 fx 亦在那里定义。
@@ -917,6 +918,7 @@
           drops = {};
           if (msg.data.drops) for (const d of msg.data.drops) drops[d.id] = d;
           if (msg.data.weather) { weather = msg.data.weather; addSysMsg(`当前天气: ${weatherLabel(weather.kind)}`); }
+          if (msg.data.timeOfDay) { dayPhase = msg.data.timeOfDay.phase; addSysMsg(`当前时段: ${timeLabel(dayPhase)}`); }
           if (msg.data.fogGrid) initFogOfWar(msg.data.fogGrid);
           addSysMsg(`进入了游戏世界 (${mapWidth}x${mapHeight})`);
           updateXpBar();
@@ -1054,6 +1056,13 @@
           if (weatherOverride) break;          // 调试强制天气时,忽略服务端下发
           weather = msg.data;
           addSysMsg(`天气变化: ${weatherLabel(weather.kind)}`);
+          break;
+
+        case 's_time':
+          if (msg.data && msg.data.phase) {
+            dayPhase = msg.data.phase;
+            addSysMsg(`时段变化: ${timeLabel(dayPhase)}`);
+          }
           break;
 
         case 's_attack':
@@ -1303,10 +1312,14 @@
       const arch = (data.archives || []).map((a) => `<li>${esc(a)}</li>`).join('');
       const rumors = (data.rumors || []).map((r) => `<li>${esc(r)}</li>`).join('') || '<li>暂无传闻</li>';
       const unlocks = (data.unlocks || []).map((u) => `<li>${esc(u)}</li>`).join('');
+      const squadRoleLabel = data.squadRole && SQUAD_ROLE[data.squadRole] ? SQUAD_ROLE[data.squadRole].label : null;
       body.innerHTML = `
         <div class="row"><b>性格</b> ${esc(data.personality || '')}</div>
+        <div class="row"><b>时段</b> ${esc(data.timeOfDay || '')}</div>
         <div class="row"><b>心情</b> ${esc(data.moodLabel)} (${data.mood})</div>
         <div class="row"><b>对你的信任</b> ${data.trust} · ${esc(data.relationLabel)}</div>
+        <div class="row"><b>你的声望</b> ${esc(data.playerTag || '旅人')}</div>
+        ${squadRoleLabel ? `<div class="row"><b>小队分工</b> ${esc(squadRoleLabel)}</div>` : ''}
         <div class="row"><b>跟随中</b> ${data.following ? '是' : '否'}</div>
         ${data.quest ? `<div class="row"><b>委托</b> ${esc(data.quest)}</div>` : ''}
         ${unlocks ? `<div class="row"><b>已解锁</b><ul>${unlocks}</ul></div>` : ''}
@@ -2125,6 +2138,21 @@
       ctx.fillStyle = e.llmEnabled ? '#ffd23f' : (vis.color || '#aabbcc');
       ctx.fillText(label, sx, nameY);
 
+      // 小队分工徽标(功能9):在名字上方显示角色
+      if (e.squadRole && SQUAD_ROLE[e.squadRole]) {
+        const rt = SQUAD_ROLE[e.squadRole];
+        ctx.font = 'bold 9px Courier New';
+        const rw = ctx.measureText(rt.label).width;
+        const ry = nameY - 12;
+        ctx.save();
+        ctx.globalAlpha = 0.85;
+        ctx.fillStyle = rt.color;
+        ctx.fillRect(sx - rw / 2 - 3, ry - 8, rw + 6, 11);
+        ctx.fillStyle = '#0b0f1a';
+        ctx.fillText(rt.label, sx, ry);
+        ctx.restore();
+      }
+
       // HP bar
       const bW = 34, bH = 4;
       const bX = sx - bW / 2, bY = sy - R - 7;
@@ -2579,6 +2607,13 @@
       ctx.fillText(p.name || `P${id}`, sx - tw / 2 + lvW, nameY);
       ctx.textAlign = 'center';
 
+      // 全局声望称号(功能8):名字上方一行小字
+      if (p.title) {
+        ctx.font = 'bold 9px Courier New';
+        ctx.fillStyle = '#ff9ecb';
+        ctx.fillText(`「${p.title}」`, sx, nameY - 13);
+      }
+
       // HP bar
       const bW = 38, bH = 4;
       const bX = sx - bW / 2, bY = sy - R - 7;
@@ -2848,6 +2883,8 @@
 
       // ── Weather overlay (屏幕空间,不随震动/摄像机移动) ──────────
       drawWeather(W, H);
+      // ── 昼夜叠加(叠在天气之上) ─────────────────────────────
+      drawDayNight(W, H);
 
       // ── 进带横幅(屏幕空间,顶部中央) ─────────────────────────
       drawZoneBanner(W);
@@ -2857,7 +2894,9 @@
       const myW = WEAPONS[players[myId]?.weapon] || WEAPONS.fist;
       const wCol = RARITY_COLOR[myW.rarity] || '#eee';
       const myLv = players[myId]?.level || 1;
-      statsEl.innerHTML = `PING: ${latency}ms  ·  <span style="color:#ffd23f">LV.${myLv}</span>  ·  PLAYERS: ${Object.keys(players).length}  ·  ENEMIES: ${aliveEnemies}  ·  ${weatherLabel(weather.kind)}  ·  <span style="color:${wCol}">⚔ ${myW.label}</span>`;
+      const myTitle = players[myId]?.title;
+      const titleHtml = myTitle ? `  ·  <span style="color:#ff9ecb">「${myTitle}」</span>` : '';
+      statsEl.innerHTML = `PING: ${latency}ms  ·  <span style="color:#ffd23f">LV.${myLv}</span>${titleHtml}  ·  PLAYERS: ${Object.keys(players).length}  ·  ENEMIES: ${aliveEnemies}  ·  ${weatherLabel(weather.kind)}  ·  ${timeLabel(dayPhase)}  ·  <span style="color:${wCol}">⚔ ${myW.label}</span>`;
 
       drawMinimap();
     }
@@ -2868,6 +2907,31 @@
     // 渲染分支(范式 B):配置了贴图就用贴图,否则自动回退程序化 —— 默认零资源可跑。
     function weatherLabel(kind) {
       return ({ clear: '☀ 晴', rain: '🌧 雨', fog: '🌫 雾', snow: '❄ 雪' })[kind] || kind;
+    }
+    function timeLabel(phase) {
+      return ({ dawn: '🌅 黎明', day: '☀ 白天', dusk: '🌇 黄昏', night: '🌙 夜晚' })[phase] || phase;
+    }
+    // 小队分工徽标样式(功能9)
+    const SQUAD_ROLE = {
+      striker: { label: '主攻', color: '#ff6b6b' },
+      flanker: { label: '包抄', color: '#4ecca3' },
+      bait:    { label: '引怪', color: '#ffd23f' },
+    };
+    // 昼夜屏幕叠加(功能7):夜晚深蓝压暗、黎明/黄昏暖色,白天透明
+    const PHASE_TINT = {
+      dawn:  { color: '80,60,110',   alpha: 0.16 },
+      day:   { color: '0,0,0',       alpha: 0 },
+      dusk:  { color: '150,70,30',   alpha: 0.20 },
+      night: { color: '10,18,55',    alpha: 0.42 },
+    };
+    function drawDayNight(W, H) {
+      const t = PHASE_TINT[dayPhase];
+      if (!t || t.alpha <= 0) return;
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = `rgba(${t.color},${t.alpha})`;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
     }
 
     // ── 分层粒子池(对象池:按目标数量增删,避免每帧新建) ──────────────

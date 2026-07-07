@@ -7,6 +7,7 @@ import { GameWorld } from '../../core/GameWorld';
 import { Player } from '../../core/Player';
 import { MsgType } from '../../network/Protocol';
 import { ZONES, zoneAt } from '../../core/Zone';
+import { GameConfig } from '../../config';
 import { logger } from '../../utils/Logger';
 import { LLMProvider } from './LLMProvider';
 import { LLMDirective, LLMGameSnapshot } from './types';
@@ -14,6 +15,9 @@ import { NpcMemory } from './memory';
 import { NpcMood } from '../agent/mood';
 import { RumorBoard } from '../agent/rumor';
 import { NpcQuests } from '../agent/quest';
+import { timeLabel } from '../agent/schedule';
+import { Reputation } from '../agent/reputation';
+import { squadSnapshot } from '../agent/squad';
 
 const FOLLOW_CHAT = /跟着我|跟随|follow|一起走|跟我走|跟上/;
 const UNFOLLOW_CHAT = /别跟|不用跟|留下|自己巡逻|在这等|不用管我/;
@@ -28,10 +32,59 @@ export class LLMBrain {
     for (const enemy of world.enemies.values()) {
       if (!enemy.llmEnabled || enemy.isDead) continue;
       if (this.pending.has(enemy.id)) continue;
-      if (now - enemy.llmLastRefresh < intervalMs && !enemy.llmChatPending) continue;
 
+      // 聊天永远即时响应
+      if (enemy.llmChatPending) {
+        this.requestDecision(world, enemy, now);
+        continue;
+      }
+
+      const { engaged, sig } = this.assessSituation(world, enemy);
+      // 省 token:无玩家在场且不在跟随 → 完全不调用 LLM,交给行为树巡逻/回巢/清怪
+      if (!engaged) continue;
+
+      const elapsed = now - enemy.llmLastRefresh;
+      if (elapsed < intervalMs) continue; // 基础限频
+      // 情形未变则拉长到 间隔×HOLD 才重算(静态对峙不必每 4s 追问模型)
+      if (sig === enemy.llmSituation && elapsed < intervalMs * GameConfig.LLM_STATIC_HOLD_MULT) continue;
+
+      enemy.llmSituation = sig;
       this.requestDecision(world, enemy, now);
     }
+  }
+
+  /**
+   * 轻量评估「是否值得调用 LLM」+ 情形签名(不构建完整快照,省 CPU 与 token)。
+   * engaged: 有玩家在探测范围内 或 正在跟随 —— 只有此时 NPC 的台词/意图对玩家才有意义。
+   * sig: 决策「输入」的桶化指纹(不含决策输出的 intent,避免自激振荡)。
+   */
+  private assessSituation(world: GameWorld, enemy: Enemy): { engaged: boolean; sig: string } {
+    const range = enemy.detectionRange * GameConfig.LLM_ENGAGE_RANGE_MULT;
+    const near: string[] = [];
+    for (const p of world.players.values()) {
+      if (p.isDead) continue;
+      if (dist(enemy.position.x, enemy.position.y, p.position.x, p.position.y) <= range) near.push(p.name);
+    }
+    let mobNear = false;
+    for (const other of world.enemies.values()) {
+      if (other.id === enemy.id || other.isDead || other.llmEnabled) continue;
+      if (dist(enemy.position.x, enemy.position.y, other.position.x, other.position.y) <= enemy.detectionRange) {
+        mobNear = true;
+        break;
+      }
+    }
+    const following = enemy.followPlayerId !== null;
+    const engaged = near.length > 0 || following;
+    const sig = [
+      near.sort().join(','),
+      Math.round((enemy.hp / enemy.maxHp) * 4), // 血量四分桶
+      Math.round(enemy.mood / 25),              // 心情分桶
+      following ? 'F' : '',
+      enemy.squadRole ?? '',
+      mobNear ? 'M' : '',
+      world.dayPhase,
+    ].join('|');
+    return { engaged, sig };
   }
 
   onPlayerChat(world: GameWorld, player: Player, text: string, now: number): void {
@@ -41,6 +94,8 @@ export class LLMBrain {
       if (d > enemy.detectionRange * 1.2) continue;
 
       enemy.llmChatPending = { from: player.name, text, at: now };
+      // 初见即有态度:该 NPC 没接触过此玩家时,按全局声望播下初始信任(功能8)
+      Reputation.seedFirstContact(world, enemy, player.name, now);
       NpcMemory.onPlayerChat(enemy, player.name, text, now);
       world.npcAgent.onPlayerChat(enemy, player, text, now);
 
@@ -155,6 +210,7 @@ export class LLMBrain {
           distance: d,
           hp: p.hp,
           maxHp: p.maxHp,
+          tag: world.playerTags.get(p.name)?.tag,
         });
       }
     }
@@ -196,6 +252,8 @@ export class LLMBrain {
       moodLabel: NpcMood.format(enemy),
       zoneRumors: RumorBoard.forZone(world, enemy.zoneId, now),
       activeQuest: questLine ?? undefined,
+      timeOfDay: timeLabel(world.dayPhase),
+      squad: squadSnapshot(world, enemy),
     };
   }
 

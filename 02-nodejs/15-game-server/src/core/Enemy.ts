@@ -78,6 +78,7 @@ export class Enemy extends Entity {
   llmDirective: LLMDirective | null = null;
   llmLastRefresh: number = 0;
   llmChatPending: { from: string; text: string; at: number } | null = null;
+  llmSituation: string = ''; // 上次决策时的情形签名(省 token:情形不变则跳过重算)
   followPlayerId: number | null = null; // 跟随模式:持久绑定玩家 id
   followBoostTimer: number = 0; // 「走快点」临时加速(秒)
   /** Agent 记忆: episodic 事件流 + 玩家关系(每 NPC 独立) */
@@ -86,6 +87,11 @@ export class Enemy extends Entity {
   llmArchives: string[] = []; // 长期记忆归档摘要
   llmQuests: Record<string, NpcQuest> = {}; // 按玩家名索引的进行中委托
   mood: number = 10; // 心情 -100~100
+
+  // 多 Agent 协作(功能9):小队黑板,由 SquadSystem 每 tick 重算
+  squadId: number | null = null;        // 所属小队 id(约定=共同目标怪 id)
+  squadRole: string | null = null;      // 'striker' | 'flanker' | 'bait'
+  squadTargetId: number | null = null;  // 小队共同目标怪 id
 
   readonly attackDamage: number;
   readonly attackRange: number;
@@ -149,9 +155,13 @@ export class Enemy extends Entity {
     this.enraged = false;
     this.llmDirective = null;
     this.llmChatPending = null;
+    this.llmSituation = '';
     this.llmPoseTimer = 0;
     this.followPlayerId = null;
     this.followBoostTimer = 0;
+    this.squadId = null;
+    this.squadRole = null;
+    this.squadTargetId = null;
     this.idleTimer = 1 + Math.random() * 2;
     this.respawnAt = 0;
     this.position.x = x;
@@ -173,6 +183,7 @@ export class Enemy extends Entity {
     if (this.llmEnabled && this.displayName) {
       state.displayName = this.displayName;
       state.llmEnabled = true;
+      if (this.squadRole) state.squadRole = this.squadRole;
     }
     return state;
   }

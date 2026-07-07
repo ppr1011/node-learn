@@ -167,7 +167,12 @@ LLM NPC 可攻击普通怪物（非 LLM 敌人）：
 |--------|------|------|
 | `LLM_ENABLED` | `true` | 总开关 |
 | `LLM_NPC_COUNT` | `2` | 新手草原 LLM NPC 数量 |
-| `LLM_DECISION_INTERVAL_MS` | `4000` | 定时战术刷新 |
+| `LLM_DECISION_INTERVAL_MS` | `4000` | 定时战术刷新基础间隔 |
+| `LLM_ENGAGE_RANGE_MULT` | `1.5` | 玩家进入 `detectionRange×` 该倍数才值得调用 |
+| `LLM_STATIC_HOLD_MULT` | `3` | 情形不变则保持 `间隔×` 该倍数才重算 |
+| `LLM_MAX_OUTPUT_TOKENS` | `160` | 云端单次输出上限 |
+| `LLM_LOCAL_ENABLED` | `false` | 战术场景改走本地 Ollama |
+| `LLM_LOCAL_MODEL` | `mistral` | 本地模型(非推理,快;R1 类见 §16.3) |
 | `DEEPSEEK_API_KEY` | `.env` | 空则用 Mock |
 
 ## 14. NPC Agent 记忆（已实现）
@@ -195,13 +200,58 @@ LLM NPC 可攻击普通怪物（非 LLM 敌人）：
 | 4 | NPC 心情 | ✅ |
 | 5 | 记忆可视化 | ✅ |
 | 6 | 长期记忆归档 | ✅ |
-| 7–9 | 日程 / 身份标签 / 多 Agent 协作 | 🔲 |
+| 7 | 昼夜日程 | ✅ |
+| 8 | 玩家身份标签 | ✅ |
+| 9 | 多 Agent 协作 | ✅ |
 
-## 16. 扩展方向
+## 16. 省 token:调用时机分层 + 本地模型路由
 
-- **记忆**：~~把最近 N 轮对话写入 snapshot~~ ✅ 已实现 `src/ai/llm/memory.ts`
+真实接入云端 API 后，token 成本主要来自「无谓调用」与「过大 prompt」。两处优化：
+
+### 16.1 调用时机（`LLMBrain.tick` + `assessSituation`）
+
+旧版每只 NPC 每 4s 无脑调用一次，空服也照烧。现改为事件驱动 + 静态去重：
+
+| 场景 | 调用策略 |
+|------|----------|
+| 无玩家在场且不跟随 | **完全不调用** —— 交给行为树巡逻/回巢/清怪/组队 |
+| 玩家在场、情形不变 | 保持决策，`间隔×LLM_STATIC_HOLD_MULT`(默认 12s)才重算 |
+| 玩家在场、情形变化 | 基础间隔(4s)重算 |
+| 玩家聊天 | 立即响应 |
+
+「情形签名」= 附近玩家 + 血量/心情分桶 + 跟随 + 小队角色 + 附近有怪 + 时段（只含决策**输入**，排除输出 intent 避免自激）。
+
+### 16.2 Prompt 分档（`buildUserPrompt`）
+
+- **战术刷新(无对话)**：只发即时战况 + 2 条近况，丢弃关系/经历/传闻/坐标 —— 最高频调用瘦身约一半。
+- **社交(有对话)**：带完整人格上下文以扮演到位，但各列表限量截断。
+- 系统提示提为常量（稳定前缀利于 DeepSeek 上下文缓存），`max_tokens 400→160`。
+
+> 综合常在 **70–90%** token 削减，聊天响应与 BT 驱动行为完全保留。
+
+### 16.3 分层路由到本地小模型（`TieredLLMProvider`）
+
+进一步把高频、玩家看不到台词的**战术决策**下放到本地 Ollama（免费），仅把玩家会读到的**对话**留给云端强模型：
+
+```
+classifyScenario(snapshot):
+  有 chatText → 'social'  → 云端(DeepSeek)   —— 质量优先,玩家在读
+  否则        → 'tactical' → 本地(mistral via Ollama) —— 省钱
+```
+
+落地要点：
+- **默认用 mistral**（非推理模型）：实测冷启约 9s、热调用约 2s,输出即小 JSON,`LLM_LOCAL_MAX_TOKENS=200` 足够。
+- **兼容推理模型**：若换 `LLM_LOCAL_MODEL=deepseek-r1:14b`,其输出内联 `<think>…</think>`,`extractMessageContent` 用 `stripThink` 剥离后再解析;此时需把 `LLM_LOCAL_MAX_TOKENS` 调大到 ~1024 容纳思维链,且延迟升到约 20s/次。
+- **只放异步低可见的战术决策**：BT 在等待期间继续执行上一意图,不卡帧;`LLM_LOCAL_TIMEOUT_MS` 超时即回退 Mock。
+- **自愈**：任何传输/超时/解析失败都降级到 Mock 规则引擎,游戏永不因 LLM 阻塞。
+
+**启用**：`ollama pull mistral && ollama serve`，再 `LLM_LOCAL_ENABLED=1 npm start`。
+
+## 17. 其它扩展方向
+
+- **记忆**：~~把最近 N 轮对话写入 snapshot~~ ✅ `src/ai/llm/memory.ts`
+- **本地模型**：~~换 `LLMProvider` 接 Ollama / vLLM~~ ✅ 见 §16.3
+- **多 NPC 协商**：~~一个 Brain 批次推理多个 NPC~~ ✅ 见 [12 · 多 Agent 协作](12-NPC-Agent趣味增强.md)（共享黑板 + leader 播报式）
 - **工具调用**：LLM 返回 `use_skill:fireball`，BT 增加对应 Action 叶子
-- **多 NPC 协商**：一个 Brain 批次推理多个 NPC，共享区域态势
-- **本地模型**：换 `LLMProvider` 实现接 Ollama / vLLM，架构不变
 
 **结论**：LLM 不适合替代行为树做帧级控制，但非常适合坐在 BT 上层当「战术参谋」。BT 保证实时性与确定性，LLM 提供语义理解与角色扮演——这是目前游戏 AI 的主流落地姿势。

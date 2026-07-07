@@ -35,6 +35,9 @@ export class Player extends Entity {
   // 迷雾探索
   exploration: ExplorationMap = new ExplorationMap();
 
+  // 全局声望称号(功能8):由 Reputation.recompute 回写,展示在 nameplate / stats
+  reputationTitle: string = '';
+
   constructor(name: string, session: Session, token: string) {
     super();
     this.name = name;
@@ -127,6 +130,7 @@ export class Player extends Entity {
       level: this.level,
       xp: this.xp,
       xpToNext: this.xpToNext,
+      ...(this.reputationTitle ? { title: this.reputationTitle } : {}),
     };
   }
 }
