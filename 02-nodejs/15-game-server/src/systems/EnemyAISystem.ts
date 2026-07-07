@@ -60,7 +60,7 @@ export class EnemyAISystem {
         continue;
       }
 
-      const ctx: BTContext = { enemy, world: this.world, dt, now, target: null, mobTarget: null };
+      const ctx: BTContext = { enemy, world: this.world, dt, now, target: null, mobTarget: null, aggroNpc: null };
       this.treeFor(enemy.kind, enemy.llmEnabled).tick(ctx);
 
       this.applyMovement(enemy, dt);

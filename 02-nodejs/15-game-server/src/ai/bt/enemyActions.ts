@@ -10,11 +10,17 @@
 import { BTContext, NodeStatus } from './types';
 import { Enemy } from '../../core/Enemy';
 import { Player } from '../../core/Player';
+import { GameWorld } from '../../core/GameWorld';
 import { MsgType } from '../../network/Protocol';
 import { GameConfig } from '../../config';
+import { RumorBoard } from '../agent/rumor';
 
 export const PATROL_RADIUS = 200; // 巡逻游荡的最大半径(距出生点)
 const LOW_HP = 0.3; // 残血阈值(逃跑/狂暴触发线)
+
+// ── 仇恨转移(aggro)调参 ─────────────────────────────────────────────
+export const AGGRO_DURATION = 6000; // NPC 挑衅后,怪盯着 NPC 打的持续时间(ms),每次被 NPC 命中刷新
+const AGGRO_LEASH_MULT = 3; // NPC 逃出 detectionRange × 该倍数则脱离仇恨,回头找玩家
 
 function dist(ax: number, ay: number, bx: number, by: number): number {
   return Math.hypot(ax - bx, ay - by);
@@ -133,5 +139,99 @@ export function patrol(ctx: BTContext): NodeStatus {
     enemy.aiState = 'idle';
     enemy.velocity = { x: 0, y: 0 };
   }
+  return 'running';
+}
+
+// ── 仇恨转移(aggro)：普通怪被帮忙打它的 NPC「拉仇恨」，回头改打 NPC ────────
+function broadcastNearPlayers(
+  world: GameWorld,
+  x: number,
+  y: number,
+  type: MsgType,
+  data: unknown,
+  range: number
+): void {
+  for (const p of world.players.values()) {
+    if (p.isDead) continue;
+    if (dist(p.position.x, p.position.y, x, y) <= range) p.session.send(type, data);
+  }
+}
+
+function clearAggro(enemy: Enemy): void {
+  enemy.aggroNpcId = null;
+  enemy.aggroUntil = 0;
+}
+
+/** NPC 命中普通怪时调用:把仇恨转到该 NPC 身上并刷新持续时间 */
+export function provokeAggro(mob: Enemy, npc: Enemy, now: number): void {
+  if (mob.llmEnabled || mob.isDead) return; // 只对普通怪生效
+  mob.aggroNpcId = npc.id;
+  mob.aggroUntil = now + AGGRO_DURATION;
+}
+
+/**
+ * 是否仍锁定着 NPC 仇恨目标 → 写入 ctx.aggroNpc。
+ * 过期 / NPC 已死或消失 / 被 NPC 甩出牵引范围,任一命中都清空仇恨并回头找玩家。
+ */
+export function hasAggroNpc(ctx: BTContext): boolean {
+  const { enemy, world, now } = ctx;
+  if (enemy.aggroNpcId === null) return false;
+  if (now >= enemy.aggroUntil) { clearAggro(enemy); return false; }
+  const npc = world.enemies.get(enemy.aggroNpcId);
+  if (!npc || npc.isDead || !npc.llmEnabled) { clearAggro(enemy); return false; }
+  const d = dist(enemy.position.x, enemy.position.y, npc.position.x, npc.position.y);
+  if (d > enemy.detectionRange * AGGRO_LEASH_MULT) { clearAggro(enemy); return false; }
+  ctx.aggroNpc = npc;
+  enemy.targetPlayerId = null; // 明确放弃玩家目标(调试/客户端可见)
+  return true;
+}
+
+export function inAggroAttackRange(ctx: BTContext): boolean {
+  const n = ctx.aggroNpc;
+  if (!n) return false;
+  return dist(ctx.enemy.position.x, ctx.enemy.position.y, n.position.x, n.position.y) <= ctx.enemy.attackRange;
+}
+
+/** 攻击仇恨 NPC(结构同 attack,但目标是 Enemy,走 ENEMY_HIT / ENEMY_DEAD 广播) */
+export function attackAggroNpc(ctx: BTContext): NodeStatus {
+  const { enemy, aggroNpc, world, now } = ctx;
+  enemy.aiState = 'attack';
+  enemy.velocity = { x: 0, y: 0 };
+  if (!aggroNpc || aggroNpc.isDead) return 'success';
+  if (now - enemy.lastAttackTime >= enemy.attackCooldown) {
+    enemy.lastAttackTime = now;
+    aggroNpc.takeDamage(enemy.attackDamage);
+    const hitMsg = {
+      enemyId: aggroNpc.id,
+      attackerId: -enemy.id, // 负数表示攻击者是敌人
+      damage: enemy.attackDamage,
+      enemyHp: aggroNpc.hp,
+    };
+    broadcastNearPlayers(world, enemy.position.x, enemy.position.y, MsgType.ENEMY_HIT, hitMsg, enemy.detectionRange * 2);
+
+    if (aggroNpc.isDead) {
+      const deadMsg = { enemyId: aggroNpc.id, killerId: -enemy.id };
+      broadcastNearPlayers(world, enemy.position.x, enemy.position.y, MsgType.ENEMY_DEAD, deadMsg, enemy.detectionRange * 2);
+      aggroNpc.respawnAt = now + GameConfig.ENEMY_RESPAWN_TIME;
+      RumorBoard.add(
+        world,
+        aggroNpc.zoneId,
+        `${aggroNpc.displayName || 'NPC'}为掩护同伴,倒在了${enemy.kind}的爪下`,
+        now
+      );
+      clearAggro(enemy);
+    }
+  }
+  return 'success';
+}
+
+/** 追击仇恨 NPC(demon 残血同样自动狂暴加速) */
+export function chaseAggroNpc(ctx: BTContext): NodeStatus {
+  const { enemy, aggroNpc } = ctx;
+  if (!aggroNpc || aggroNpc.isDead) return 'failure';
+  if (enemy.kind === 'demon' && enemy.hp / enemy.maxHp < LOW_HP) enemy.enraged = true;
+  const speed = enemy.speed * (enemy.enraged ? 1.4 : 1);
+  enemy.aiState = 'chase';
+  moveToward(enemy, aggroNpc.position.x, aggroNpc.position.y, speed);
   return 'running';
 }

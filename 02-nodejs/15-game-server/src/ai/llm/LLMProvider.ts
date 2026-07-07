@@ -1,11 +1,9 @@
 /**
  * LLM 提供方 —— DeepSeek / OpenAI 兼容 API + 无 Key 时的规则 Mock
- *
- * 默认接 DeepSeek 官方 API(https://api.deepseek.com/chat/completions)。
- * 未配置 DEEPSEEK_API_KEY 时自动降级为 MockLLMProvider。
  */
 
 import { LLMDirective, LLMGameSnapshot, LLMIntent } from './types';
+import { logger } from '../../utils/Logger';
 
 const VALID_INTENTS: LLMIntent[] = ['attack', 'flee', 'patrol', 'taunt', 'hunt', 'follow'];
 
@@ -20,32 +18,96 @@ function extractJson(raw: string): string {
   const start = raw.indexOf('{');
   const end = raw.lastIndexOf('}');
   if (start >= 0 && end > start) return raw.slice(start, end + 1);
+  const partial = raw.indexOf('{');
+  if (partial >= 0) return raw.slice(partial).trim();
   return raw.trim();
 }
 
-function parseDirective(raw: string, now: number): LLMDirective | null {
-  try {
-    const parsed = JSON.parse(extractJson(raw)) as { intent?: string; speech?: string; reason?: string };
-    const intent = parsed.intent as LLMIntent;
-    if (!VALID_INTENTS.includes(intent)) return null;
-    return {
-      intent,
-      speech: typeof parsed.speech === 'string' ? parsed.speech.slice(0, 120) : undefined,
-      reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 200) : undefined,
-      decidedAt: now,
-    };
-  } catch {
-    return null;
+/** 修复模型常见 JSON 瑕疵:多余括号、截断字符串 */
+function repairJsonText(json: string): string {
+  let s = json.trim();
+  while (s.endsWith('}}')) {
+    const trial = s.slice(0, -1);
+    try { JSON.parse(trial); s = trial; } catch { break; }
   }
+  if (!s.endsWith('}') && s.startsWith('{')) {
+    s = s.replace(/,\s*$/, '');
+    if (!s.endsWith('}')) s += '}';
+  }
+  return s;
+}
+
+function readStrField(json: string, key: string): string | undefined {
+  const re = new RegExp(`"${key}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`);
+  const m = json.match(re);
+  if (m?.[1]) return m[1].replace(/\\"/g, '"').slice(0, key === 'speech' ? 120 : 200);
+  const partial = new RegExp(`"${key}"\\s*:\\s*"([^"]*)`);
+  const p = json.match(partial);
+  if (p?.[1]) return p[1].slice(0, key === 'speech' ? 120 : 200);
+  return undefined;
+}
+
+function parseDirective(raw: string, now: number): LLMDirective | null {
+  if (!raw.trim()) return null;
+
+  const candidates = [extractJson(raw), raw.trim()];
+  for (let json of candidates) {
+    json = repairJsonText(json);
+    try {
+      const parsed = JSON.parse(json) as { intent?: string; speech?: string; reason?: string };
+      const intent = normalizeIntent(parsed.intent);
+      if (!intent) continue;
+      return {
+        intent,
+        speech: typeof parsed.speech === 'string' ? parsed.speech.slice(0, 120) : undefined,
+        reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 200) : undefined,
+        decidedAt: now,
+      };
+    } catch {
+      // 继续尝试正则兜底(应对 token 截断)
+    }
+
+    const intent = normalizeIntent(readStrField(json, 'intent'));
+    if (intent) {
+      return {
+        intent,
+        speech: readStrField(json, 'speech'),
+        reason: readStrField(json, 'reason'),
+        decidedAt: now,
+      };
+    }
+  }
+  return null;
+}
+
+function normalizeIntent(value: unknown): LLMIntent | null {
+  if (typeof value !== 'string') return null;
+  const v = value.trim().toLowerCase() as LLMIntent;
+  return VALID_INTENTS.includes(v) ? v : null;
+}
+
+/** 从 Chat Completions 响应体提取文本(兼容 reasoning 字段) */
+function extractMessageContent(body: Record<string, unknown>): string {
+  const choices = body.choices as Array<{ message?: Record<string, unknown> }> | undefined;
+  const msg = choices?.[0]?.message;
+  if (!msg) return '';
+
+  const content = msg.content;
+  if (typeof content === 'string' && content.trim()) return content.trim();
+
+  const reasoning = msg.reasoning_content;
+  if (typeof reasoning === 'string' && reasoning.trim()) return reasoning.trim();
+
+  return '';
 }
 
 function buildSystemPrompt(): string {
   return [
-    '你是 MMO 游戏里的一名 NPC Agent(有独立记忆与性格)。根据世界快照输出 JSON,不要 markdown。',
-    '字段: intent(attack|flee|patrol|taunt|hunt|follow), speech(可选,中文,≤40字), reason(可选,简短)。',
-    '规则:参考记忆与信任值;对高信任玩家友善(patrol/follow/hunt);对袭击者/仇人警惕或 attack;',
-    '玩家曾说「不打你」且信任高时优先 patrol/follow 而非 attack;残血 flee;说跟着用 follow。',
-    '只输出一行 JSON。',
+    '你是 MMO 游戏里的一名 NPC Agent。你必须只输出一个 JSON 对象,禁止 markdown、禁止解释文字。',
+    '必填字段 intent,取值只能是: attack flee patrol taunt hunt follow (小写英文)。',
+    '可选字段 speech(中文≤30字) reason(中文≤20字)。',
+    '示例:{"intent":"patrol","speech":"你好,冒险者。","reason":"无威胁"}',
+    '规则:高信任友善;曾承诺不攻击则勿 attack;残血 flee;说跟着用 follow;附近怪 hunt。',
   ].join('\n');
 }
 
@@ -60,20 +122,31 @@ function buildUserPrompt(s: LLMGameSnapshot): string {
   const rel = s.playerRelations.length > 0
     ? `玩家关系:\n${s.playerRelations.map((l) => `- ${l}`).join('\n')}`
     : '玩家关系:无';
+  const archives = s.memoryArchives.length > 0
+    ? `人生经历:\n${s.memoryArchives.map((l) => `- ${l}`).join('\n')}`
+    : '';
+  const rumors = s.zoneRumors.length > 0
+    ? `区域传闻:\n${s.zoneRumors.map((l) => `- ${l}`).join('\n')}`
+    : '';
   return [
     `NPC:${s.npcName}(${s.kind}),性格:${s.personality}`,
-    `自身:HP ${s.hp}/${s.maxHp},状态 ${s.aiState},坐标(${s.x},${s.y}),区域 ${s.zoneName},天气 ${s.weather}`,
+    `自身:HP ${s.hp}/${s.maxHp},状态 ${s.aiState},心情 ${s.moodLabel},坐标(${s.x},${s.y}),区域 ${s.zoneName},天气 ${s.weather}`,
     `附近玩家:${players}`,
     `附近怪物数量:${s.nearbyMobCount}`,
     `正在跟随玩家:${s.isFollowing ? '是' : '否'}`,
+    s.activeQuest ? `进行中委托:${s.activeQuest}` : '',
     mem,
     rel,
+    archives,
+    rumors,
     chat,
   ].filter(Boolean).join('\n');
 }
 
 /** DeepSeek / OpenAI 兼容 Chat Completions */
 export class OpenAICompatibleProvider implements LLMProvider {
+  private readonly mockFallback = new MockLLMProvider();
+
   constructor(
     private readonly apiUrl: string,
     private readonly apiKey: string,
@@ -90,8 +163,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
       },
       body: JSON.stringify({
         model: this.model,
-        temperature: 0.4,
-        max_tokens: 200,
+        temperature: 0.3,
+        max_tokens: 400,
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: buildSystemPrompt() },
@@ -103,13 +176,15 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const errBody = await res.text().catch(() => '');
       throw new Error(`LLM HTTP ${res.status}: ${errBody.slice(0, 200)}`);
     }
-    const body = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-    const content = body.choices?.[0]?.message?.content?.trim() ?? '';
+    const body = (await res.json()) as Record<string, unknown>;
+    const content = extractMessageContent(body);
     const directive = parseDirective(content, now);
-    if (!directive) {
-      throw new Error(`LLM 返回无法解析: ${content.slice(0, 80)}`);
-    }
-    return directive;
+    if (directive) return directive;
+
+    logger.warn(
+      `[LLM] 解析失败,回退 Mock | content="${content.slice(0, 100)}"`
+    );
+    return this.mockFallback.decide(snapshot);
   }
 }
 

@@ -4,6 +4,8 @@ import { GameWorld } from '../core/GameWorld';
 import { MsgType } from '../network/Protocol';
 import { GameConfig } from '../config';
 import { NpcMemory } from '../ai/llm/memory';
+import { NpcQuests } from '../ai/agent/quest';
+import { RumorBoard } from '../ai/agent/rumor';
 
 const ENEMY_RESPAWN_TIME = GameConfig.ENEMY_RESPAWN_TIME;
 
@@ -95,6 +97,21 @@ export class CombatSystem {
     if (enemyTarget.isDead) {
       if (enemyTarget.llmEnabled) {
         NpcMemory.onNpcDeath(enemyTarget, player.name, Date.now());
+        RumorBoard.add(
+          this.world,
+          enemyTarget.zoneId,
+          `${player.name}击杀了${enemyTarget.displayName || 'NPC'}`,
+          Date.now()
+        );
+      } else {
+        NpcQuests.onPlayerKillMob(
+          this.world,
+          player,
+          enemyTarget.kind,
+          enemyTarget.position.x,
+          enemyTarget.position.y,
+          Date.now()
+        );
       }
       const deadMsg = { enemyId: enemyTarget.id };
       player.session.send(MsgType.ENEMY_DEAD, deadMsg);

@@ -25,6 +25,7 @@ export interface BTContext {
   now: number;
   target: Player | null;
   mobTarget: Enemy | null;
+  aggroNpc: Enemy | null; // 仇恨转移目标:普通怪被 NPC 挑衅后回击的那个 NPC
 }
 
 export interface BTNode {

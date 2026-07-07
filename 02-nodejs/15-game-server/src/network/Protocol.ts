@@ -34,6 +34,11 @@ export enum MsgType {
   // Weapon drops(掉落 / 拾取 / 自然消失)
   ITEM_SPAWN = 's_item_spawn',
   ITEM_PICKUP = 's_item_pickup',
+
+  // NPC Agent
+  C_NPC_INFO = 'c_npc_info',
+  NPC_INFO = 's_npc_info',
+  NPC_QUEST = 's_quest',
 }
 
 export interface GameMessage {

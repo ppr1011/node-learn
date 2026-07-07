@@ -81,7 +81,8 @@ npm start
 | [08 · 天气视觉增强](docs/08-天气视觉增强.md) | 分层景深粒子、地面涟漪、闪电、体积雾、色调分级、平滑过渡、程序化/贴图双范式 | `client/index.html`、`client/assets/weather/`、`spawn/definitions/weather.ts` |
 | [09 · 行为树 AI](docs/09-行为树AI.md) | FSM vs 行为树、组合/装饰/叶子节点、running 语义、敌人 AI 重构、slime 逃跑 / demon 狂暴 | `ai/bt/*`、`systems/EnemyAISystem.ts`、`core/Enemy.ts` |
 | [10 · 武器与掉落系统](docs/10-武器与掉落系统.md) | 击杀掉落、加权稀有度、拾取装备、武器化攻击动画、飞行物/震波、CC0 贴图 | `core/Weapon.ts`、`core/WeaponDrop.ts`、`core/GameWorld.ts`、`systems/CombatSystem.ts`、`client/index.html` |
-| [11 · LLM + 行为树 AI](docs/11-LLM行为树.md) | LLM 大脑 + BT 身体、异步战术决策、聊天触发、Mock/OpenAI Provider | `ai/llm/*`、`ai/bt/llmNpcTree.ts`、`systems/EnemyAISystem.ts`、`systems/ChatSystem.ts` |
+| [11 · LLM + 行为树 AI](docs/11-LLM行为树.md) | LLM 大脑 + BT 身体、记忆、跟随、寻路、DeepSeek | `ai/llm/*`、`ai/bt/llmNpcTree.ts` |
+| [12 · NPC Agent 趣味增强](docs/12-NPC-Agent趣味增强.md) | 委托任务、关系解锁、传闻、心情、记忆面板 | `ai/agent/*`、`client/index.html` |
 
 ---
 

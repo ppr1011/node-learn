@@ -129,6 +129,52 @@
       border-top: 1px solid #1a3050;
       line-height: 1.7;
     }
+    /* NPC Agent 信息面板 */
+    #npc-panel {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: min(340px, 92vw);
+      max-height: 70vh;
+      overflow-y: auto;
+      background: linear-gradient(160deg, #101a2e 0%, #0a1220 100%);
+      border: 1px solid #3a6a9a;
+      border-radius: 8px;
+      padding: 14px 16px;
+      z-index: 200;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+    #npc-panel.open { display: block; }
+    #npc-panel h3 { color: #ffd23f; margin-bottom: 8px; font-size: 14px; }
+    #npc-panel .row { margin-bottom: 6px; color: #aab; }
+    #npc-panel .row b { color: #7ec8ff; }
+    #npc-panel ul { margin: 4px 0 8px 16px; color: #ccc; }
+    #npc-panel .close { float: right; color: #e94560; cursor: pointer; border: none; background: none; font-size: 16px; }
+    #npc-scrim {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 199;
+    }
+    #npc-scrim.open { display: block; }
+    #quest-hud {
+      position: absolute;
+      top: 52px;
+      left: 14px;
+      background: rgba(10,20,30,0.82);
+      border: 1px solid #2a5a4a;
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 10px;
+      color: #8fd4a8;
+      display: none;
+      z-index: 5;
+    }
     /* Minimap */
     #minimap {
       position: absolute;
@@ -366,7 +412,7 @@
         ENTER · 聊天 &nbsp; ESC · 关闭输入<br>
         <span style="color:#4ecca3">击杀敌人掉落武器 · 走过即拾取装备</span><br>
         <span style="color:#ffd23f">击杀获得经验 · 升级提升生命与攻击</span><br>
-        <span style="color:#7ec8ff">点击金色 NPC · 自动寻路靠近</span><br>
+        <span style="color:#7ec8ff">点击金色 NPC · 自动寻路 | Shift+点击 · Agent 面板</span><br>
         <span style="color:#365">T · 切天气 &nbsp; [ ] · 强度 &nbsp; Y · 复原</span>
       </div>
       <div id="chat-input-container">
@@ -377,6 +423,13 @@
 
   <!-- 抽屉遮罩(移动端点击关闭聊天侧栏) -->
   <div id="drawer-scrim" class="touch-only"></div>
+  <div id="npc-scrim"></div>
+  <div id="npc-panel">
+    <button class="close" id="npc-panel-close" type="button">✕</button>
+    <h3 id="npc-panel-title">NPC Agent</h3>
+    <div id="npc-panel-body"></div>
+  </div>
+  <div id="quest-hud"></div>
 
   <!-- 触屏操作层:虚拟摇杆 + 攻击/聊天按钮(仅触屏设备显示) -->
   <div id="touch-ui" class="touch-only">
@@ -1029,6 +1082,17 @@
           break;
         }
 
+        case 's_npc_info':
+          showNpcPanel(msg.data || {});
+          break;
+
+        case 's_quest':
+          updateQuestHud(msg.data);
+          if (msg.data && msg.data.status !== 'done') {
+            addSysMsg(`委托进度: ${msg.data.mobKind} ${msg.data.progress}/${msg.data.target}`);
+          }
+          break;
+
         case 's_pong':
           latency = Date.now() - (msg.data?.time || pingTime);
           break;
@@ -1215,8 +1279,61 @@
       const wx = e.clientX - rect.left + camera.x;
       const wy = e.clientY - rect.top + camera.y;
       const npc = pickNpcAtWorld(wx, wy);
-      if (npc) startAutoNavToNpc(npc);
+      if (!npc) return;
+      if (e.shiftKey) {
+        requestNpcInfo(npc.id);
+      } else {
+        startAutoNavToNpc(npc);
+      }
     });
+
+    function requestNpcInfo(enemyId) {
+      if (ws && connected) {
+        ws.send(JSON.stringify({ type: 'c_npc_info', data: { enemyId } }));
+      }
+    }
+
+    function showNpcPanel(data) {
+      const panel = document.getElementById('npc-panel');
+      const scrim = document.getElementById('npc-scrim');
+      const body = document.getElementById('npc-panel-body');
+      const title = document.getElementById('npc-panel-title');
+      title.textContent = data.name || 'NPC Agent';
+      const mem = (data.memory || []).map((m) => `<li>${esc(m)}</li>`).join('') || '<li>无</li>';
+      const arch = (data.archives || []).map((a) => `<li>${esc(a)}</li>`).join('');
+      const rumors = (data.rumors || []).map((r) => `<li>${esc(r)}</li>`).join('') || '<li>暂无传闻</li>';
+      const unlocks = (data.unlocks || []).map((u) => `<li>${esc(u)}</li>`).join('');
+      body.innerHTML = `
+        <div class="row"><b>性格</b> ${esc(data.personality || '')}</div>
+        <div class="row"><b>心情</b> ${esc(data.moodLabel)} (${data.mood})</div>
+        <div class="row"><b>对你的信任</b> ${data.trust} · ${esc(data.relationLabel)}</div>
+        <div class="row"><b>跟随中</b> ${data.following ? '是' : '否'}</div>
+        ${data.quest ? `<div class="row"><b>委托</b> ${esc(data.quest)}</div>` : ''}
+        ${unlocks ? `<div class="row"><b>已解锁</b><ul>${unlocks}</ul></div>` : ''}
+        <div class="row"><b>近期记忆</b><ul>${mem}</ul></div>
+        ${arch ? `<div class="row"><b>人生经历</b><ul>${arch}</ul></div>` : ''}
+        <div class="row"><b>区域传闻</b><ul>${rumors}</ul></div>`;
+      panel.classList.add('open');
+      scrim.classList.add('open');
+    }
+
+    function closeNpcPanel() {
+      document.getElementById('npc-panel').classList.remove('open');
+      document.getElementById('npc-scrim').classList.remove('open');
+    }
+
+    document.getElementById('npc-panel-close').addEventListener('click', closeNpcPanel);
+    document.getElementById('npc-scrim').addEventListener('click', closeNpcPanel);
+
+    function updateQuestHud(data) {
+      const hud = document.getElementById('quest-hud');
+      if (!data || data.status === 'done') {
+        hud.style.display = 'none';
+        return;
+      }
+      hud.style.display = 'block';
+      hud.textContent = `委托 · ${data.npcName}: 击杀 ${data.mobKind} ${data.progress}/${data.target}`;
+    }
 
     function drawNavPath() {
       if (!autoNav.active || !autoNav.path || autoNav.path.length === 0) return;

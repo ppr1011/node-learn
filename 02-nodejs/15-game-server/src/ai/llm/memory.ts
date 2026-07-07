@@ -7,6 +7,7 @@
 
 import { Enemy } from '../../core/Enemy';
 import { GameConfig } from '../../config';
+import { NpcMood } from '../agent/mood';
 
 export type MemoryKind = 'chat_in' | 'chat_out' | 'combat' | 'bond' | 'world';
 
@@ -92,7 +93,14 @@ export class NpcMemory {
     enemy.llmMemory!.push(entry);
     const max = GameConfig.LLM_MEMORY_MAX;
     while (enemy.llmMemory!.length > max) {
-      enemy.llmMemory!.shift();
+      if (enemy.llmMemory!.length >= 4) {
+        const chunk = enemy.llmMemory!.splice(0, 4);
+        const summary = chunk.map((e) => e.text).join(' → ');
+        enemy.llmArchives.push(summary.slice(0, 120));
+        while (enemy.llmArchives.length > 5) enemy.llmArchives.shift();
+      } else {
+        enemy.llmMemory!.shift();
+      }
     }
   }
 
@@ -134,6 +142,7 @@ export class NpcMemory {
     const r = this.relation(enemy, playerName, now);
     r.hits++;
     this.bumpTrust(enemy, playerName, -22, now);
+    NpcMood.onHit(enemy);
     this.add(enemy, 'combat', `${playerName}攻击了我(-${damage}HP)`, now, playerName);
     if (r.trust < -30) r.label = '袭击者';
   }

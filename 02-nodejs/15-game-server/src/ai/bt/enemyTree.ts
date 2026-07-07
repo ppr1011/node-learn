@@ -22,11 +22,32 @@
 import { BTNode } from './types';
 import { sel, seq, cond, act } from './nodes';
 import { EnemyKind } from '../../core/Enemy';
-import { acquireTarget, isLowHp, inAttackRange, attack, chase, flee, patrol } from './enemyActions';
+import {
+  acquireTarget,
+  isLowHp,
+  inAttackRange,
+  attack,
+  chase,
+  flee,
+  patrol,
+  hasAggroNpc,
+  inAggroAttackRange,
+  attackAggroNpc,
+  chaseAggroNpc,
+} from './enemyActions';
 
 /** 按敌人种类构建一棵树(种类差异通过闭包捕获 kind 注入到条件里) */
 export function buildEnemyTree(kind: EnemyKind): BTNode {
   return sel(
+    // 0. 仇恨转移:被 NPC 帮忙揍时,优先回头死磕那个 NPC(玩家得以脱身)
+    //    aggroNpcId 只会被 NPC 的 attackMob 设到普通怪身上,故此分支对 NPC 自身恒 failure
+    seq(
+      cond('hasAggroNpc', hasAggroNpc),
+      sel(
+        seq(cond('inAggroRange', inAggroAttackRange), act('attackAggroNpc', attackAggroNpc)),
+        act('chaseAggroNpc', chaseAggroNpc)
+      )
+    ),
     seq(
       cond('acquireTarget', acquireTarget),
       sel(

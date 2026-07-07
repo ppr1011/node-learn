@@ -78,4 +78,7 @@ export const GameConfig = {
   LLM_DECISION_INTERVAL_MS: 4000, // 定时战术刷新间隔(聊天可立即触发)
   LLM_NPC_COUNT: 2,             // 新手草原固定刷几只 LLM 守卫
   LLM_MEMORY_MAX: 16,           // 每个 NPC episodic 记忆条数上限
+  LLM_QUEST_DEFAULT_COUNT: 3,   // 默认委托击杀数量
+  LLM_QUEST_REWARD_XP: 35,      // 委托完成基础经验
+  LLM_RUMOR_MAX: 8,             // 每个难度带传闻条数上限
 } as const;

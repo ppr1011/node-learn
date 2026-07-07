@@ -12,6 +12,8 @@ import { MovementSystem } from '../systems/MovementSystem';
 import { ChatSystem } from '../systems/ChatSystem';
 import { CombatSystem } from '../systems/CombatSystem';
 import { EnemyAISystem } from '../systems/EnemyAISystem';
+import { NpcAgentSystem } from '../ai/agent/NpcAgentSystem';
+import { RumorEntry } from '../ai/agent/rumor';
 import { GameConfig } from '../config';
 import { logger } from '../utils/Logger';
 import { MsgType } from '../network/Protocol';
@@ -43,6 +45,8 @@ export class GameWorld {
   readonly chat: ChatSystem;
   readonly combat: CombatSystem;
   readonly enemyAI: EnemyAISystem;
+  readonly npcAgent: NpcAgentSystem;
+  rumorBoard?: Map<number, RumorEntry[]>;
 
   constructor() {
     this.aoi = new AOIManager(
@@ -109,6 +113,7 @@ export class GameWorld {
     this.chat = new ChatSystem(this);
     this.combat = new CombatSystem(this);
     this.enemyAI = new EnemyAISystem(this);
+    this.npcAgent = new NpcAgentSystem(this);
 
     // 按难度带刷怪:每条带在带内随机取该带允许的种类,并套用该带的属性倍率
     // (深层带怪更硬更值钱)。落点用带内拒绝采样避障,与 findSafeSpawn 同一思路。
@@ -242,8 +247,9 @@ export class GameWorld {
       );
     }
 
-    // 更新敌人 AI
+    // 更新敌人 AI + Agent 心情
     this.enemyAI.update(dt);
+    this.npcAgent.tick(dt);
 
     // 掉落物:拾取判定 + TTL 清理
     this.updateDrops(Date.now());

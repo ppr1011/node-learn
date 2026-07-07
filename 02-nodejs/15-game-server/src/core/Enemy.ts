@@ -1,6 +1,7 @@
 import { Entity } from './Entity';
 import { LLMDirective } from '../ai/llm/types';
 import { NpcMemoryEntry, NpcPlayerRelation } from '../ai/llm/memory';
+import { NpcQuest } from '../ai/agent/quest';
 
 export type EnemyKind = 'slime' | 'skeleton' | 'demon' | 'orc' | 'wraith' | 'golem' | 'dragon';
 export type EnemyAIState = 'idle' | 'patrol' | 'chase' | 'attack' | 'flee';
@@ -66,6 +67,10 @@ export class Enemy extends Entity {
   llmPoseTimer: number = 0; // taunt 站定计时(与 patrol 的 idleTimer 分离)
   enraged: boolean = false; // demon 残血狂暴:一旦触发保持,速度提升(行为树 chase 分支设置)
 
+  // 仇恨转移:普通怪被 NPC 帮忙揍时,把矛头转向 NPC(记 NPC id + 到期时间戳)
+  aggroNpcId: number | null = null;
+  aggroUntil: number = 0; // Date.now() 时间戳,过期则回头继续找玩家
+
   // LLM 战术层(仅 llmEnabled 的 NPC 使用)
   llmEnabled: boolean = false;
   displayName: string = '';
@@ -78,6 +83,9 @@ export class Enemy extends Entity {
   /** Agent 记忆: episodic 事件流 + 玩家关系(每 NPC 独立) */
   llmMemory: NpcMemoryEntry[] = [];
   llmRelations: Record<string, NpcPlayerRelation> = {};
+  llmArchives: string[] = []; // 长期记忆归档摘要
+  llmQuests: Record<string, NpcQuest> = {}; // 按玩家名索引的进行中委托
+  mood: number = 10; // 心情 -100~100
 
   readonly attackDamage: number;
   readonly attackRange: number;
@@ -135,6 +143,8 @@ export class Enemy extends Entity {
     this.patrolTarget = null;
     this.targetPlayerId = null;
     this.targetEnemyId = null;
+    this.aggroNpcId = null;
+    this.aggroUntil = 0;
     this.lastAttackTime = 0;
     this.enraged = false;
     this.llmDirective = null;

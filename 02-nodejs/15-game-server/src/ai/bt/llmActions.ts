@@ -4,6 +4,7 @@
 
 import { BTContext, NodeStatus } from './types';
 import { LLMIntent } from '../llm/types';
+import { NpcAgentSystem } from '../agent/NpcAgentSystem';
 import { GameConfig } from '../../config';
 import { MsgType } from '../../network/Protocol';
 import { Enemy } from '../../core/Enemy';
@@ -15,6 +16,7 @@ import {
   chase,
   flee,
   patrol,
+  provokeAggro,
 } from './enemyActions';
 
 function intent(ctx: BTContext): LLMIntent | null {
@@ -162,6 +164,8 @@ export function attackMob(ctx: BTContext): NodeStatus {
   if (now - enemy.lastAttackTime >= enemy.attackCooldown) {
     enemy.lastAttackTime = now;
     mobTarget.takeDamage(enemy.attackDamage);
+    // NPC 出手帮打 → 怪把仇恨转到 NPC 身上(玩家借机脱身)
+    provokeAggro(mobTarget, enemy, now);
     const hitMsg = {
       enemyId: mobTarget.id,
       attackerId: -enemy.id,
@@ -232,6 +236,13 @@ export function shouldHuntMob(ctx: BTContext): boolean {
   if (llmWantsFlee(ctx)) return false;
   if (llmWantsHunt(ctx) || ctx.enemy.followPlayerId !== null) {
     return acquireMobTarget(ctx);
+  }
+  for (const p of ctx.world.players.values()) {
+    if (p.isDead) continue;
+    if (NpcAgentSystem.trustPartnerHunt(ctx.enemy, p.name)) {
+      const d = dist(ctx.enemy.position.x, ctx.enemy.position.y, p.position.x, p.position.y);
+      if (d <= ctx.enemy.detectionRange * 2) return acquireMobTarget(ctx);
+    }
   }
   const i = intent(ctx);
   if (i === 'patrol' || i === 'taunt' || i === null) {

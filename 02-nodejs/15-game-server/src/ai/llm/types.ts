@@ -46,4 +46,9 @@ export interface LLMGameSnapshot {
   /** Agent 记忆摘要(注入 LLM 上下文) */
   memoryRecent: string[];
   playerRelations: string[];
+  memoryArchives: string[];
+  mood: number;
+  moodLabel: string;
+  zoneRumors: string[];
+  activeQuest?: string;
 }

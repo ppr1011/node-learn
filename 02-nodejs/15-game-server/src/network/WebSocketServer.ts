@@ -101,6 +101,12 @@ export class GameWebSocketServer {
         }
         break;
 
+      case MsgType.C_NPC_INFO:
+        if (player && typeof msg.data?.enemyId === 'number') {
+          this.world.npcAgent.handleNpcInfo(player, msg.data.enemyId);
+        }
+        break;
+
       default:
         // 第一条非 ping 消息视为 join
         if (!player && msg.data?.name) {

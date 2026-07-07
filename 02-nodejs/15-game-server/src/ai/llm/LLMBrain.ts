@@ -11,6 +11,9 @@ import { logger } from '../../utils/Logger';
 import { LLMProvider } from './LLMProvider';
 import { LLMDirective, LLMGameSnapshot } from './types';
 import { NpcMemory } from './memory';
+import { NpcMood } from '../agent/mood';
+import { RumorBoard } from '../agent/rumor';
+import { NpcQuests } from '../agent/quest';
 
 const FOLLOW_CHAT = /跟着我|跟随|follow|一起走|跟我走|跟上/;
 const UNFOLLOW_CHAT = /别跟|不用跟|留下|自己巡逻|在这等|不用管我/;
@@ -39,6 +42,7 @@ export class LLMBrain {
 
       enemy.llmChatPending = { from: player.name, text, at: now };
       NpcMemory.onPlayerChat(enemy, player.name, text, now);
+      world.npcAgent.onPlayerChat(enemy, player, text, now);
 
       if (FOLLOW_CHAT.test(text)) {
         enemy.followPlayerId = player.id;
@@ -163,8 +167,12 @@ export class LLMBrain {
       if (d <= enemy.detectionRange) nearbyMobCount++;
     }
 
-    const chat = enemy.llmChatPending;
     const mem = NpcMemory.summarize(enemy, Date.now());
+    const chat = enemy.llmChatPending;
+    const now = Date.now();
+    const questLine = chat?.from
+      ? NpcQuests.formatActive(enemy, chat.from)
+      : null;
     return {
       npcName: enemy.displayName ?? enemy.kind,
       personality: enemy.personality ?? '谨慎的守卫',
@@ -183,6 +191,11 @@ export class LLMBrain {
       chatText: chat?.text,
       memoryRecent: mem.recent,
       playerRelations: mem.relations,
+      memoryArchives: enemy.llmArchives.slice(-3),
+      mood: enemy.mood,
+      moodLabel: NpcMood.format(enemy),
+      zoneRumors: RumorBoard.forZone(world, enemy.zoneId, now),
+      activeQuest: questLine ?? undefined,
     };
   }
 
