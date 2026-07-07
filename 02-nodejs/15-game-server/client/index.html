@@ -366,6 +366,7 @@
         ENTER · 聊天 &nbsp; ESC · 关闭输入<br>
         <span style="color:#4ecca3">击杀敌人掉落武器 · 走过即拾取装备</span><br>
         <span style="color:#ffd23f">击杀获得经验 · 升级提升生命与攻击</span><br>
+        <span style="color:#7ec8ff">点击金色 NPC · 自动寻路靠近</span><br>
         <span style="color:#365">T · 切天气 &nbsp; [ ] · 强度 &nbsp; Y · 复原</span>
       </div>
       <div id="chat-input-container">
@@ -399,6 +400,7 @@
     </div>
   </div>
 
+  <script src="pathfind.js"></script>
   <script>
     const WS_URL = (location.protocol === 'file:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')
       ? 'ws://localhost:4000'
@@ -431,6 +433,20 @@
     let screenShake = 0;
     let mapObjects = [];
     let obstacles = [];   // 服务端权威下发的碰撞障碍物
+    let pathfinder = null; // 网格 A* 寻路(见 pathfind.js)
+    const autoNav = {
+      active: false,
+      targetId: null,
+      targetName: '',
+      path: null,
+      pathIdx: 0,
+      lastPlan: 0,
+      lastX: 0,
+      lastY: 0,
+      stuckAt: 0,
+      arriveDist: 72,
+      waypointDist: 36,
+    };
     let enemies = {};     // id → enemy state (from server)
     const speechBubbles = new Map(); // entityId → { text, expiresAt } (NPC 用负 id)
     let drops = {};       // id → 地面武器掉落物 { id, kind, rarity, x, y }
@@ -837,6 +853,10 @@
           players[myId] = msg.data.self;
           for (const p of msg.data.players) players[p.id] = p;
           obstacles = msg.data.obstacles || [];
+          if (typeof Pathfinder !== 'undefined') {
+            pathfinder = new Pathfinder(mapWidth, mapHeight, 100, 16);
+            pathfinder.rebuild(obstacles);
+          }
           if (msg.data.enemies) {
             enemies = {};
             for (const e of msg.data.enemies) enemies[e.id] = e;
@@ -1027,6 +1047,206 @@
       chatBox.scrollTop = chatBox.scrollHeight;
     }
 
+    function stopAutoNav(reason) {
+      if (!autoNav.active) return;
+      autoNav.active = false;
+      autoNav.path = null;
+      autoNav.pathIdx = 0;
+      autoNav.targetId = null;
+      if (reason) addSysMsg(reason);
+      if (ws && connected && players[myId]?._moving) {
+        ws.send(JSON.stringify({ type: 'c_stop' }));
+        players[myId]._moving = false;
+      }
+    }
+
+    function findLlmNpcByName(name) {
+      const q = (name || '').trim().toLowerCase();
+      if (!q) return null;
+      for (const en of Object.values(enemies)) {
+        if (!en.llmEnabled || en.isDead) continue;
+        const label = (en.displayName || en.kind || '').toLowerCase();
+        if (label.includes(q) || q.includes(label)) return en;
+      }
+      return null;
+    }
+
+    function nearestLlmNpc() {
+      const me = players[myId];
+      if (!me) return null;
+      const px = me.x ?? me.targetX ?? 0;
+      const py = me.y ?? me.targetY ?? 0;
+      let best = null, bestD = Infinity;
+      for (const en of Object.values(enemies)) {
+        if (!en.llmEnabled || en.isDead) continue;
+        const ex = en.x ?? en.targetX ?? 0;
+        const ey = en.y ?? en.targetY ?? 0;
+        const d = Math.hypot(ex - px, ey - py);
+        if (d < bestD) { bestD = d; best = en; }
+      }
+      return best;
+    }
+
+    function planNavPath(goalX, goalY) {
+      const me = players[myId];
+      if (!me || !pathfinder) return false;
+      const px = me.x ?? me.targetX ?? 0;
+      const py = me.y ?? me.targetY ?? 0;
+      const path = pathfinder.findPath(px, py, goalX, goalY);
+      if (!path || path.length === 0) return false;
+      autoNav.path = path;
+      autoNav.pathIdx = 0;
+      autoNav.lastPlan = Date.now();
+      autoNav.lastX = px;
+      autoNav.lastY = py;
+      autoNav.stuckAt = Date.now();
+      return true;
+    }
+
+    function startAutoNavToNpc(enemy) {
+      if (!enemy || !enemy.llmEnabled || enemy.isDead) return;
+      const me = players[myId];
+      if (!me || me.isDead) return;
+      const tx = enemy.x ?? enemy.targetX ?? 0;
+      const ty = enemy.y ?? enemy.targetY ?? 0;
+      const px = me.x ?? me.targetX ?? 0;
+      const py = me.y ?? me.targetY ?? 0;
+      if (Math.hypot(tx - px, ty - py) < autoNav.arriveDist) {
+        addSysMsg(`已在 ${enemy.displayName || enemy.kind} 附近`);
+        return;
+      }
+      autoNav.active = true;
+      autoNav.targetId = enemy.id;
+      autoNav.targetName = enemy.displayName || enemy.kind;
+      if (!planNavPath(tx, ty)) {
+        autoNav.path = [{ x: tx, y: ty }];
+        autoNav.pathIdx = 0;
+        autoNav.lastPlan = Date.now();
+      }
+      addSysMsg(`自动寻路 → ${autoNav.targetName}（点击移动或 WASD 取消）`);
+    }
+
+    function tickAutoNav() {
+      if (!autoNav.active) return null;
+      const me = players[myId];
+      if (!me || me.isDead) { stopAutoNav(); return null; }
+
+      const target = enemies[autoNav.targetId];
+      if (!target || target.isDead || !target.llmEnabled) {
+        stopAutoNav('寻路目标已消失');
+        return null;
+      }
+
+      const px = me.x ?? me.targetX ?? 0;
+      const py = me.y ?? me.targetY ?? 0;
+      const tx = target.x ?? target.targetX ?? 0;
+      const ty = target.y ?? target.targetY ?? 0;
+
+      if (Math.hypot(tx - px, ty - py) < autoNav.arriveDist) {
+        stopAutoNav(`已到达 ${autoNav.targetName} 附近`);
+        return null;
+      }
+
+      const moved = Math.hypot(px - autoNav.lastX, py - autoNav.lastY);
+      if (moved < 4) {
+        if (Date.now() - autoNav.stuckAt > 2200) {
+          planNavPath(tx, ty);
+          autoNav.stuckAt = Date.now();
+        }
+      } else {
+        autoNav.lastX = px;
+        autoNav.lastY = py;
+        autoNav.stuckAt = Date.now();
+      }
+
+      if (!autoNav.path || Date.now() - autoNav.lastPlan > 3000) {
+        planNavPath(tx, ty);
+      }
+
+      while (autoNav.path && autoNav.pathIdx < autoNav.path.length) {
+        const wp = autoNav.path[autoNav.pathIdx];
+        if (Math.hypot(wp.x - px, wp.y - py) < autoNav.waypointDist) {
+          autoNav.pathIdx++;
+        } else break;
+      }
+
+      const dest = (autoNav.path && autoNav.path[autoNav.pathIdx]) || { x: tx, y: ty };
+      const dx = dest.x - px;
+      const dy = dest.y - py;
+      const len = Math.hypot(dx, dy) || 1;
+      return { dx: dx / len, dy: dy / len };
+    }
+
+    function tryNavChatCommand(text) {
+      const raw = text.trim();
+      if (!raw) return false;
+      if (/^\/(goto|nav)\b/i.test(raw)) {
+        const name = raw.replace(/^\/(goto|nav)\s*/i, '').trim();
+        const npc = name ? findLlmNpcByName(name) : nearestLlmNpc();
+        if (npc) { startAutoNavToNpc(npc); return true; }
+        addSysMsg('附近没有可寻路的 LLM NPC');
+        return true;
+      }
+      const m = raw.match(/^(?:去找|导航到|走到)\s*(.+)$/);
+      if (m) {
+        const npc = findLlmNpcByName(m[1]) || nearestLlmNpc();
+        if (npc) { startAutoNavToNpc(npc); return true; }
+        addSysMsg('找不到该 NPC');
+        return true;
+      }
+      return false;
+    }
+
+    function pickNpcAtWorld(wx, wy) {
+      let best = null, bestD = 52;
+      for (const en of Object.values(enemies)) {
+        if (!en.llmEnabled || en.isDead) continue;
+        const ex = en.x ?? en.targetX ?? 0;
+        const ey = en.y ?? en.targetY ?? 0;
+        const d = Math.hypot(wx - ex, wy - ey);
+        if (d < bestD) { bestD = d; best = en; }
+      }
+      return best;
+    }
+
+    canvas.addEventListener('click', (e) => {
+      if (!connected || !myId || document.activeElement === chatInput) return;
+      const rect = canvas.getBoundingClientRect();
+      const wx = e.clientX - rect.left + camera.x;
+      const wy = e.clientY - rect.top + camera.y;
+      const npc = pickNpcAtWorld(wx, wy);
+      if (npc) startAutoNavToNpc(npc);
+    });
+
+    function drawNavPath() {
+      if (!autoNav.active || !autoNav.path || autoNav.path.length === 0) return;
+      const me = players[myId];
+      if (!me) return;
+      const px = me.x ?? me.targetX ?? 0;
+      const py = me.y ?? me.targetY ?? 0;
+
+      ctx.save();
+      ctx.strokeStyle = 'rgba(78,204,163,0.55)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 5]);
+      ctx.beginPath();
+      ctx.moveTo(px - camera.x, py - camera.y);
+      for (let i = autoNav.pathIdx; i < autoNav.path.length; i++) {
+        const wp = autoNav.path[i];
+        ctx.lineTo(wp.x - camera.x, wp.y - camera.y);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(78,204,163,0.85)';
+      for (let i = autoNav.pathIdx; i < autoNav.path.length; i++) {
+        const wp = autoNav.path[i];
+        ctx.beginPath();
+        ctx.arc(wp.x - camera.x, wp.y - camera.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
     function addChatMsg(name, text) {
       const d = document.createElement('div');
       d.className = 'msg';
@@ -1144,7 +1364,11 @@
       if (document.activeElement === chatInput) {
         if (e.key === 'Enter') {
           const text = chatInput.value.trim();
-          if (text && ws) ws.send(JSON.stringify({ type: 'c_chat', data: { text } }));
+          if (text && ws) {
+            if (!tryNavChatCommand(text)) {
+              ws.send(JSON.stringify({ type: 'c_chat', data: { text } }));
+            }
+          }
           chatInput.value = '';
           chatInput.blur();
         }
@@ -1206,8 +1430,16 @@
     function sendInput() {
       if (!ws || !connected || !myId) return;
       if (document.activeElement === chatInput) return;
+
+      const autoDir = tickAutoNav();
+      if (autoDir) {
+        ws.send(JSON.stringify({ type: 'c_move', data: autoDir }));
+        if (players[myId]) players[myId]._moving = true;
+        return;
+      }
+
       let dx = 0, dy = 0;
-      if (joy.active) {                 // 触屏摇杆优先:直接使用其方向分量
+      if (joy.active) {
         dx = joy.dx; dy = joy.dy;
       } else {
         if (keys['w'] || keys['arrowup'])    dy -= 1;
@@ -1216,6 +1448,7 @@
         if (keys['d'] || keys['arrowright']) dx += 1;
       }
       if (dx !== 0 || dy !== 0) {
+        if (autoNav.active) stopAutoNav('手动操作，已取消寻路');
         ws.send(JSON.stringify({ type: 'c_move', data: { dx, dy } }));
         if (players[myId]) players[myId]._moving = true;
       } else if (players[myId]?._moving) {
@@ -1267,6 +1500,7 @@
       }
       joyEl.addEventListener('pointerdown', e => {
         e.preventDefault();
+        if (autoNav.active) stopAutoNav('手动操作，已取消寻路');
         joyPid = e.pointerId;
         joyEl.setPointerCapture(e.pointerId);
         joy.active = true;
@@ -2445,6 +2679,7 @@
         else drawEnemy(item.obj);
       }
       drawSpeechBubbles();
+      drawNavPath();
       // Dead enemies rendered as faint markers (behind everything)
       for (const e of Object.values(enemies)) if (e.isDead) drawEnemy(e);
 

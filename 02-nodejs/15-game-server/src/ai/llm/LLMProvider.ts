@@ -41,10 +41,11 @@ function parseDirective(raw: string, now: number): LLMDirective | null {
 
 function buildSystemPrompt(): string {
   return [
-    '你是 MMO 游戏里的 NPC 战术大脑。根据世界快照输出 JSON,不要 markdown。',
+    '你是 MMO 游戏里的一名 NPC Agent(有独立记忆与性格)。根据世界快照输出 JSON,不要 markdown。',
     '字段: intent(attack|flee|patrol|taunt|hunt|follow), speech(可选,中文,≤40字), reason(可选,简短)。',
-    '规则:残血 flee;玩家说跟着/一起走用 follow;附近刷怪 hunt;友好闲聊 patrol;挑衅 attack。',
-    '只输出一行 JSON,例如:{"intent":"patrol","speech":"欢迎来到新手草原。","reason":"无威胁"}',
+    '规则:参考记忆与信任值;对高信任玩家友善(patrol/follow/hunt);对袭击者/仇人警惕或 attack;',
+    '玩家曾说「不打你」且信任高时优先 patrol/follow 而非 attack;残血 flee;说跟着用 follow。',
+    '只输出一行 JSON。',
   ].join('\n');
 }
 
@@ -53,12 +54,20 @@ function buildUserPrompt(s: LLMGameSnapshot): string {
     .map((p) => `${p.name}(距${Math.round(p.distance)}px,HP${p.hp}/${p.maxHp})`)
     .join(', ') || '无';
   const chat = s.chatText ? `玩家${s.chatFrom}说:「${s.chatText}」` : '';
+  const mem = s.memoryRecent.length > 0
+    ? `近期记忆:\n${s.memoryRecent.map((l) => `- ${l}`).join('\n')}`
+    : '近期记忆:无';
+  const rel = s.playerRelations.length > 0
+    ? `玩家关系:\n${s.playerRelations.map((l) => `- ${l}`).join('\n')}`
+    : '玩家关系:无';
   return [
     `NPC:${s.npcName}(${s.kind}),性格:${s.personality}`,
     `自身:HP ${s.hp}/${s.maxHp},状态 ${s.aiState},坐标(${s.x},${s.y}),区域 ${s.zoneName},天气 ${s.weather}`,
     `附近玩家:${players}`,
     `附近怪物数量:${s.nearbyMobCount}`,
     `正在跟随玩家:${s.isFollowing ? '是' : '否'}`,
+    mem,
+    rel,
     chat,
   ].filter(Boolean).join('\n');
 }
@@ -139,6 +148,10 @@ export class MockLLMProvider implements LLMProvider {
     }
 
     if (snapshot.chatText) {
+      const rel = snapshot.playerRelations.find((r) => snapshot.chatFrom && r.startsWith(snapshot.chatFrom));
+      const highTrust = rel && /信任([3-9]\d|[1-9]\d{2,})/.test(rel);
+      const promisedPeace = snapshot.memoryRecent.some((m) => m.includes('承诺不会攻击'));
+
       if (/跟着我|跟随|follow|一起走|跟我走|跟上/.test(text)) {
         return {
           intent: 'follow',
@@ -148,10 +161,13 @@ export class MockLLMProvider implements LLMProvider {
         };
       }
       if (/你好|hello|hi|嗨|在吗/.test(text)) {
+        const greet = highTrust || promisedPeace
+          ? `又见面啦,${snapshot.chatFrom},我还记得你。`
+          : `你好呀,${snapshot.chatFrom}。我是${snapshot.npcName},这片草原由我照看。`;
         return {
-          intent: 'patrol',
-          speech: `你好呀,${snapshot.chatFrom}。我是${snapshot.npcName},这片草原由我照看。`,
-          reason: '友好问候(Mock)',
+          intent: promisedPeace || highTrust ? 'follow' : 'patrol',
+          speech: greet,
+          reason: '友好问候(Mock+记忆)',
           decidedAt: now,
         };
       }

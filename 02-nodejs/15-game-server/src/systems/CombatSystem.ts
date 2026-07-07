@@ -3,6 +3,7 @@ import { Enemy } from '../core/Enemy';
 import { GameWorld } from '../core/GameWorld';
 import { MsgType } from '../network/Protocol';
 import { GameConfig } from '../config';
+import { NpcMemory } from '../ai/llm/memory';
 
 const ENEMY_RESPAWN_TIME = GameConfig.ENEMY_RESPAWN_TIME;
 
@@ -79,6 +80,9 @@ export class CombatSystem {
     if (!enemyTarget) return;
 
     enemyTarget.takeDamage(player.attackDamage);
+    if (enemyTarget.llmEnabled) {
+      NpcMemory.onPlayerHit(enemyTarget, player.name, player.attackDamage, Date.now());
+    }
     const hitMsg = {
       enemyId: enemyTarget.id,
       attackerId: player.id,
@@ -89,6 +93,9 @@ export class CombatSystem {
     for (const other of nearby) other.session.send(MsgType.ENEMY_HIT, hitMsg);
 
     if (enemyTarget.isDead) {
+      if (enemyTarget.llmEnabled) {
+        NpcMemory.onNpcDeath(enemyTarget, player.name, Date.now());
+      }
       const deadMsg = { enemyId: enemyTarget.id };
       player.session.send(MsgType.ENEMY_DEAD, deadMsg);
       for (const other of nearby) other.session.send(MsgType.ENEMY_DEAD, deadMsg);

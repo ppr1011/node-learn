@@ -43,4 +43,7 @@ export interface LLMGameSnapshot {
   /** 玩家刚发来的聊天(若有) */
   chatFrom?: string;
   chatText?: string;
+  /** Agent 记忆摘要(注入 LLM 上下文) */
+  memoryRecent: string[];
+  playerRelations: string[];
 }

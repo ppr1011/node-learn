@@ -1,5 +1,6 @@
 import { Entity } from './Entity';
 import { LLMDirective } from '../ai/llm/types';
+import { NpcMemoryEntry, NpcPlayerRelation } from '../ai/llm/memory';
 
 export type EnemyKind = 'slime' | 'skeleton' | 'demon' | 'orc' | 'wraith' | 'golem' | 'dragon';
 export type EnemyAIState = 'idle' | 'patrol' | 'chase' | 'attack' | 'flee';
@@ -74,6 +75,9 @@ export class Enemy extends Entity {
   llmChatPending: { from: string; text: string; at: number } | null = null;
   followPlayerId: number | null = null; // 跟随模式:持久绑定玩家 id
   followBoostTimer: number = 0; // 「走快点」临时加速(秒)
+  /** Agent 记忆: episodic 事件流 + 玩家关系(每 NPC 独立) */
+  llmMemory: NpcMemoryEntry[] = [];
+  llmRelations: Record<string, NpcPlayerRelation> = {};
 
   readonly attackDamage: number;
   readonly attackRange: number;

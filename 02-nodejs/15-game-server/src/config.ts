@@ -77,4 +77,5 @@ export const GameConfig = {
   LLM_MODEL: process.env.LLM_MODEL ?? 'deepseek-v4-flash',
   LLM_DECISION_INTERVAL_MS: 4000, // 定时战术刷新间隔(聊天可立即触发)
   LLM_NPC_COUNT: 2,             // 新手草原固定刷几只 LLM 守卫
+  LLM_MEMORY_MAX: 16,           // 每个 NPC episodic 记忆条数上限
 } as const;

@@ -10,6 +10,7 @@ import { ZONES, zoneAt } from '../../core/Zone';
 import { logger } from '../../utils/Logger';
 import { LLMProvider } from './LLMProvider';
 import { LLMDirective, LLMGameSnapshot } from './types';
+import { NpcMemory } from './memory';
 
 const FOLLOW_CHAT = /跟着我|跟随|follow|一起走|跟我走|跟上/;
 const UNFOLLOW_CHAT = /别跟|不用跟|留下|自己巡逻|在这等|不用管我/;
@@ -37,10 +38,12 @@ export class LLMBrain {
       if (d > enemy.detectionRange * 1.2) continue;
 
       enemy.llmChatPending = { from: player.name, text, at: now };
+      NpcMemory.onPlayerChat(enemy, player.name, text, now);
 
       if (FOLLOW_CHAT.test(text)) {
         enemy.followPlayerId = player.id;
         enemy.llmDirective = { intent: 'follow', decidedAt: now, reason: '玩家邀请跟随' };
+        NpcMemory.onFollowStart(enemy, player.name, now);
       } else if (UNFOLLOW_CHAT.test(text)) {
         enemy.followPlayerId = null;
         enemy.llmDirective = { intent: 'patrol', decidedAt: now, reason: '玩家解除跟随' };
@@ -69,6 +72,7 @@ export class LLMBrain {
           enemy.llmPoseTimer = 0;
         }
         if (directive.speech) {
+          NpcMemory.onNpcSpeech(enemy, snapshot.chatFrom, directive.speech, now);
           this.broadcastNpcChat(world, enemy, directive.speech);
         }
       })
@@ -160,6 +164,7 @@ export class LLMBrain {
     }
 
     const chat = enemy.llmChatPending;
+    const mem = NpcMemory.summarize(enemy, Date.now());
     return {
       npcName: enemy.displayName ?? enemy.kind,
       personality: enemy.personality ?? '谨慎的守卫',
@@ -176,6 +181,8 @@ export class LLMBrain {
       isFollowing: enemy.followPlayerId !== null,
       chatFrom: chat?.from,
       chatText: chat?.text,
+      memoryRecent: mem.recent,
+      playerRelations: mem.relations,
     };
   }
 

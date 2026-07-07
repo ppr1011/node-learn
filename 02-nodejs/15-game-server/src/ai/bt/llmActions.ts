@@ -7,6 +7,7 @@ import { LLMIntent } from '../llm/types';
 import { GameConfig } from '../../config';
 import { MsgType } from '../../network/Protocol';
 import { Enemy } from '../../core/Enemy';
+import { NpcMemory } from '../llm/memory';
 import {
   acquireTarget,
   inAttackRange,
@@ -173,6 +174,12 @@ export function attackMob(ctx: BTContext): NodeStatus {
       const deadMsg = { enemyId: mobTarget.id, killerId: -enemy.id };
       broadcastNear(ctx, enemy.position.x, enemy.position.y, MsgType.ENEMY_DEAD, deadMsg, enemy.detectionRange * 2);
       mobTarget.respawnAt = Date.now() + GameConfig.ENEMY_RESPAWN_TIME;
+      let allyName: string | undefined;
+      if (enemy.followPlayerId !== null) {
+        const ally = world.players.get(enemy.followPlayerId);
+        allyName = ally?.name;
+      }
+      NpcMemory.onMobKill(enemy, mobTarget.kind, now, allyName);
       ctx.mobTarget = null;
       enemy.targetEnemyId = null;
     }
@@ -201,6 +208,22 @@ export function taunt(ctx: BTContext): NodeStatus {
   if (enemy.llmPoseTimer > 0) return 'running';
   enemy.llmPoseTimer = 0;
   return 'success';
+}
+
+/** 信任足够高时拒绝攻击(记忆驱动) */
+export function shouldAttackPlayer(ctx: BTContext): boolean {
+  if (!hasLlmDirective(ctx) || !llmWantsAttack(ctx)) return false;
+  const { enemy, world } = ctx;
+  for (const p of world.players.values()) {
+    if (p.isDead) continue;
+    const d = dist(enemy.position.x, enemy.position.y, p.position.x, p.position.y);
+    if (d > enemy.detectionRange * 1.2) continue;
+    const rel = enemy.llmRelations[p.name];
+    if (!rel) continue;
+    if (rel.trust >= 25 && /承诺不攻击|挚友|友善/.test(rel.label)) return false;
+    if (rel.trust >= 50) return false;
+  }
+  return true;
 }
 
 /** 应主动狩猎:显式 hunt / 跟随途中顺路清怪 / 巡逻时附近刷怪 */
