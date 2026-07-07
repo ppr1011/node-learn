@@ -5,8 +5,11 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
+    "prestart": "lsof -ti:${PORT:-4000} | xargs kill -9 2>/dev/null || true",
     "start": "ts-node src/server.ts",
-    "dev": "ts-node --watch src/server.ts"
+    "predev": "lsof -ti:${PORT:-4000} | xargs kill -9 2>/dev/null || true",
+    "dev": "ts-node --watch src/server.ts",
+    "stop": "lsof -ti:${PORT:-4000} | xargs kill -9 2>/dev/null || true"
   },
   "dependencies": {
     "ws": "^8.18.0"
