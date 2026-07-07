@@ -101,6 +101,12 @@ export class Player extends Entity {
     this.recomputeAttack();
   }
 
+  heal(amount: number): number {
+    const actual = Math.min(amount, this.maxHp - this.hp);
+    this.hp = Math.min(this.maxHp, this.hp + amount);
+    return actual;
+  }
+
   takeDamage(damage: number): void {
     if (this.isDead) return;
     this.hp = Math.max(0, this.hp - damage);

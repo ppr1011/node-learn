@@ -223,7 +223,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const body = (await res.json()) as Record<string, unknown>;
       const content = extractMessageContent(body);
       const directive = parseDirective(content, now);
-      if (directive) return directive;
+      if (directive) {
+        directive.via = `${this.opts.label}:${this.opts.model}`;
+        return directive;
+      }
       logger.warn(`[LLM:${this.opts.label}] 解析失败,回退 Mock | content="${content.slice(0, 80)}"`);
     } catch (err) {
       // 网络 / 超时 / 非 2xx:降级到 Mock,而非抛出中断决策
@@ -231,30 +234,77 @@ export class OpenAICompatibleProvider implements LLMProvider {
     } finally {
       if (timer) clearTimeout(timer);
     }
-    return this.mockFallback.decide(snapshot);
+    const fallback = await this.mockFallback.decide(snapshot);
+    fallback.via = `${this.opts.label}:mock(回退)`;
+    return fallback;
   }
 }
 
-/** 场景分层:有玩家对话=社交(需高质量,走云端);否则=战术(高频低可见,走本地省钱) */
-export type LLMScenario = 'social' | 'tactical';
-export function classifyScenario(s: LLMGameSnapshot): LLMScenario {
-  return s.chatText ? 'social' : 'tactical';
+export interface OllamaProviderOptions {
+  label: string;
+  apiUrl: string;      // Ollama 原生 /api/chat
+  model: string;
+  maxTokens: number;
+  timeoutMs?: number;
+  think?: boolean;     // 是否让推理模型思考(默认关闭:Qwen3 等一旦思考会慢到分钟级且常截断)
 }
 
 /**
- * 分层路由 Provider:战术刷新 → 本地小模型(免费);玩家对话 → 云端强模型(质量)。
- * 玩家看得到的台词用云端保证观感,后台高频的静默战术决策交给本地 Ollama 省 token。
+ * Ollama 原生 /api/chat Provider。
+ *
+ * 为什么不复用 OpenAI 兼容(/v1)端点:Qwen3 这类推理模型在 /v1 上无法关闭思维链,
+ * 会把 token 预算全耗在 reasoning 字段、content 恒空(实测 48s 仍无答案)。
+ * 原生 /api/chat 支持 `think:false` 一键关思考 → 实测 ~1s 直接吐 JSON。
  */
-export class TieredLLMProvider implements LLMProvider {
-  constructor(
-    private readonly local: LLMProvider,
-    private readonly cloud: LLMProvider
-  ) {}
+export class OllamaProvider implements LLMProvider {
+  private readonly mockFallback = new MockLLMProvider();
 
-  decide(snapshot: LLMGameSnapshot): Promise<LLMDirective> {
-    return classifyScenario(snapshot) === 'social'
-      ? this.cloud.decide(snapshot)
-      : this.local.decide(snapshot);
+  constructor(private readonly opts: OllamaProviderOptions) {}
+
+  async decide(snapshot: LLMGameSnapshot): Promise<LLMDirective> {
+    const now = Date.now();
+    const controller = new AbortController();
+    const timer = this.opts.timeoutMs
+      ? setTimeout(() => controller.abort(), this.opts.timeoutMs)
+      : null;
+    try {
+      const res = await fetch(this.opts.apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: this.opts.model,
+          stream: false,
+          think: this.opts.think ?? false,
+          format: 'json',
+          options: { temperature: 0.3, num_predict: this.opts.maxTokens },
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: buildUserPrompt(snapshot) },
+          ],
+        }),
+      });
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}: ${errBody.slice(0, 160)}`);
+      }
+      const body = (await res.json()) as { message?: { content?: unknown } };
+      const raw = typeof body.message?.content === 'string' ? body.message.content : '';
+      const content = stripThink(raw); // think:true 时思考在 message.thinking,content 仍是纯答案;防御性再剥一次
+      const directive = parseDirective(content, now);
+      if (directive) {
+        directive.via = `${this.opts.label}:${this.opts.model}`;
+        return directive;
+      }
+      logger.warn(`[LLM:${this.opts.label}] 解析失败,回退 Mock | content="${content.slice(0, 80)}"`);
+    } catch (err) {
+      logger.warn(`[LLM:${this.opts.label}] 调用失败,回退 Mock: ${(err as Error).message}`);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    const fallback = await this.mockFallback.decide(snapshot);
+    fallback.via = `${this.opts.label}:mock(回退)`;
+    return fallback;
   }
 }
 
@@ -363,27 +413,28 @@ export function createLLMProvider(
   apiUrl: string,
   model: string
 ): LLMProvider {
-  // 云端(强模型):有 key 才启用,否则 Mock 规则引擎兜底
-  const cloud: LLMProvider = apiKey
-    ? new OpenAICompatibleProvider({
-        label: 'cloud',
-        apiUrl,
-        apiKey,
-        model,
-        maxTokens: GameConfig.LLM_MAX_OUTPUT_TOKENS,
-      })
-    : new MockLLMProvider();
+  // 本地优先:开关一开,全部 LLM 决策(战术 + 对话)都走本地 Ollama,不再访问云端
+  if (GameConfig.LLM_LOCAL_ENABLED) {
+    logger.info(`[LLM] 本地模式:全部决策走本地(${GameConfig.LLM_LOCAL_MODEL} @ ${GameConfig.LLM_LOCAL_URL}, think=${GameConfig.LLM_LOCAL_THINK})`);
+    return new OllamaProvider({
+      label: 'local',
+      apiUrl: GameConfig.LLM_LOCAL_URL,
+      model: GameConfig.LLM_LOCAL_MODEL,
+      maxTokens: GameConfig.LLM_LOCAL_MAX_TOKENS,
+      timeoutMs: GameConfig.LLM_LOCAL_TIMEOUT_MS,
+      think: GameConfig.LLM_LOCAL_THINK,
+    });
+  }
 
-  if (!GameConfig.LLM_LOCAL_ENABLED) return cloud;
-
-  // 本地(Ollama 小模型):战术场景走它。R1 需较大输出预算容纳思维链,并设超时防卡顿
-  const local = new OpenAICompatibleProvider({
-    label: 'local',
-    apiUrl: GameConfig.LLM_LOCAL_URL,
-    model: GameConfig.LLM_LOCAL_MODEL,
-    maxTokens: GameConfig.LLM_LOCAL_MAX_TOKENS,
-    timeoutMs: GameConfig.LLM_LOCAL_TIMEOUT_MS,
-  });
-  logger.info(`[LLM] 分层路由启用:战术→本地(${GameConfig.LLM_LOCAL_MODEL}) · 对话→${apiKey ? '云端' : 'Mock'}`);
-  return new TieredLLMProvider(local, cloud);
+  // 否则:有 key 走云端强模型,无 key 用 Mock 规则引擎兜底
+  if (apiKey) {
+    return new OpenAICompatibleProvider({
+      label: 'cloud',
+      apiUrl,
+      apiKey,
+      model,
+      maxTokens: GameConfig.LLM_MAX_OUTPUT_TOKENS,
+    });
+  }
+  return new MockLLMProvider();
 }

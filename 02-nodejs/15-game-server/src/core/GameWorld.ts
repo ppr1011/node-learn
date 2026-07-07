@@ -21,6 +21,7 @@ import { logger } from '../utils/Logger';
 import { MsgType } from '../network/Protocol';
 import { WeaponDrop } from './WeaponDrop';
 import { rollWeaponDrop } from './Weapon';
+import { HealthPack } from './HealthPack';
 import { PlayerStore } from './PlayerStore';
 import { ExplorationMap } from './ExplorationMap';
 import { Zone, ZONES, ZONE_ENEMY_COUNT, zonePublicState } from './Zone';
@@ -35,6 +36,8 @@ export class GameWorld {
   readonly players: Map<number, Player> = new Map();
   readonly enemies: Map<number, Enemy> = new Map();
   readonly drops: Map<number, WeaponDrop> = new Map();
+  readonly healthPacks: Map<number, HealthPack> = new Map();
+  private nextHpPackAt: number = 0;
   readonly playerStore: PlayerStore = new PlayerStore(); // 角色存档:掉线重连恢复位置/装备
   readonly aoi: AOIManager;
   readonly spawner: Spawner;
@@ -128,6 +131,7 @@ export class GameWorld {
     this.spawnLlmNpcs();
 
     this.timer = new GameTimer(GameConfig.TICK_RATE, (dt) => this.tick(dt));
+    this.nextHpPackAt = Date.now() + GameConfig.HP_PACK_INTERVAL;
   }
 
   start(): void {
@@ -212,6 +216,7 @@ export class GameWorld {
       obstacles: this.obstacles,
       enemies: [...this.enemies.values()].map(e => e.toPublicState()),
       drops: [...this.drops.values()].map(d => d.toPublicState()),
+      healthPacks: [...this.healthPacks.values()].map(p => p.toPublicState()),
       weather: this.weather,
       timeOfDay: { phase: this.dayPhase, cycleMs: GameConfig.DAY_CYCLE_MS },
       fogGrid: {
@@ -273,6 +278,7 @@ export class GameWorld {
 
     // 掉落物:拾取判定 + TTL 清理
     this.updateDrops(Date.now());
+    this.updateHealthPacks(Date.now());
 
     // 广播状态更新给各自视野内的玩家
     this.broadcastStates();
@@ -326,6 +332,54 @@ export class GameWorld {
         }
       }
     }
+  }
+
+  /** 每 tick:生命包拾取 + TTL 清理 + 周期性补刷 */
+  private updateHealthPacks(now: number): void {
+    const R = GameConfig.HP_PACK_PICKUP_RADIUS;
+    for (const pack of this.healthPacks.values()) {
+      if (now >= pack.expiresAt) {
+        this.healthPacks.delete(pack.id);
+        this.broadcastAll(MsgType.HP_PACK_PICKUP, { packId: pack.id, byPlayerId: null });
+        continue;
+      }
+      if (now < pack.pickableAt) continue;
+      for (const player of this.players.values()) {
+        if (player.isDead) continue;
+        const dx = player.position.x - pack.position.x;
+        const dy = player.position.y - pack.position.y;
+        if (Math.hypot(dx, dy) <= R) {
+          const healed = player.heal(pack.healAmount);
+          this.healthPacks.delete(pack.id);
+          this.broadcastAll(MsgType.HP_PACK_PICKUP, {
+            packId: pack.id,
+            byPlayerId: player.id,
+            healed,
+            hp: player.hp,
+            maxHp: player.maxHp,
+          });
+          break;
+        }
+      }
+    }
+    if (now >= this.nextHpPackAt && this.healthPacks.size < GameConfig.HP_PACK_MAX) {
+      this.spawnHealthPack();
+      this.nextHpPackAt = now + GameConfig.HP_PACK_INTERVAL;
+    }
+  }
+
+  private spawnHealthPack(): void {
+    const zone = ZONES[Math.floor(Math.random() * ZONES.length)]!;
+    const pos = this.findSafeSpawnInZone(zone, GameConfig.HP_PACK_PICKUP_RADIUS);
+    const pack = new HealthPack(
+      pos.x, pos.y,
+      GameConfig.HP_PACK_HEAL,
+      GameConfig.HP_PACK_TTL,
+      GameConfig.HP_PACK_PICKUP_GRACE,
+    );
+    this.healthPacks.set(pack.id, pack);
+    this.broadcastAll(MsgType.HP_PACK_SPAWN, pack.toPublicState());
+    logger.info(`HealthPack spawned @ (${Math.round(pos.x)}, ${Math.round(pos.y)}) zone=${zone.id}`);
   }
 
   private broadcastStates(): void {

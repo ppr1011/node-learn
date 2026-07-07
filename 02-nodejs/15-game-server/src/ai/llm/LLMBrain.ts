@@ -134,6 +134,7 @@ export class LLMBrain {
           NpcMemory.onNpcSpeech(enemy, snapshot.chatFrom, directive.speech, now);
           this.broadcastNpcChat(world, enemy, directive.speech);
         }
+        this.logDialogue(enemy, snapshot, directive);
       })
       .catch((err: Error) => {
         logger.warn(`[LLM] ${enemy.displayName ?? enemy.kind}#${enemy.id} 决策失败: ${err.message}`);
@@ -149,6 +150,17 @@ export class LLMBrain {
         this.pending.delete(enemy.id);
         enemy.llmChatPending = null;
       });
+  }
+
+  /** 后台对话日志:谁听到了什么、路由到哪个模型、决策出什么意图/台词 */
+  private logDialogue(enemy: Enemy, snapshot: LLMGameSnapshot, directive: LLMDirective): void {
+    if (!GameConfig.LLM_LOG_DIALOGUE) return;
+    const who = `${enemy.displayName || enemy.kind}#${enemy.id}`;
+    const via = directive.via ?? 'mock';
+    const heard = snapshot.chatText ? ` ⟵ ${snapshot.chatFrom}「${snapshot.chatText}」` : '';
+    const said = directive.speech ? ` 💬「${directive.speech}」` : '';
+    const reason = directive.reason ? ` · ${directive.reason}` : '';
+    logger.info(`[NPC对话] ${who} [${via}] → ${directive.intent}${heard}${said}${reason}`);
   }
 
   /** 跟随是持久状态:仅 follow 意图或解除聊天可改;周期 patrol 不覆盖 */

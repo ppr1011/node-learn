@@ -36,6 +36,10 @@ export enum MsgType {
   ITEM_SPAWN = 's_item_spawn',
   ITEM_PICKUP = 's_item_pickup',
 
+  // Health packs(战场随机刷新 / 走近拾取回血 / 自然消失)
+  HP_PACK_SPAWN = 's_hp_spawn',
+  HP_PACK_PICKUP = 's_hp_pickup',
+
   // NPC Agent
   C_NPC_INFO = 'c_npc_info',
   NPC_INFO = 's_npc_info',

@@ -503,6 +503,7 @@
     let enemies = {};     // id → enemy state (from server)
     const speechBubbles = new Map(); // entityId → { text, expiresAt } (NPC 用负 id)
     let drops = {};       // id → 地面武器掉落物 { id, kind, rarity, x, y }
+    let healthPacks = {}; // id → 生命补给包 { id, x, y, healAmount }
     let projectiles = []; // 飞行物(法球等),世界坐标
     let shockwaves = [];  // 重击落地震波环,世界坐标
     let lastAttackAt = 0; // 本地最近一次成功发起攻击的时间(仅用于冷却环 HUD 估算)
@@ -917,6 +918,8 @@
           }
           drops = {};
           if (msg.data.drops) for (const d of msg.data.drops) drops[d.id] = d;
+          healthPacks = {};
+          if (msg.data.healthPacks) for (const p of msg.data.healthPacks) healthPacks[p.id] = p;
           if (msg.data.weather) { weather = msg.data.weather; addSysMsg(`当前天气: ${weatherLabel(weather.kind)}`); }
           if (msg.data.timeOfDay) { dayPhase = msg.data.timeOfDay.phase; addSysMsg(`当前时段: ${timeLabel(dayPhase)}`); }
           if (msg.data.fogGrid) initFogOfWar(msg.data.fogGrid);
@@ -1088,6 +1091,27 @@
             if (msg.data.byPlayerId === myId && w) addSysMsg(`⚔ 拾取并装备了 ${w.label}（${RARITY_LABEL[w.rarity]}）`);
           }
           delete drops[msg.data.dropId];
+          break;
+        }
+
+        case 's_hp_spawn': {
+          const p = msg.data;
+          healthPacks[p.id] = p;
+          spawnRing(p.x, p.y, '#33ff88', 12);
+          addSysMsg(`❤ 战场刷新了生命补给包 (+${p.healAmount}HP)`);
+          break;
+        }
+
+        case 's_hp_pickup': {
+          const p = healthPacks[msg.data.packId];
+          if (msg.data.byPlayerId) {
+            if (p) { spawnRing(p.x, p.y, '#33ff88', 16); spawnDmgNumText(p.x, p.y - 8, `+${msg.data.healed}`, '#33ff88'); }
+            if (msg.data.byPlayerId === myId) {
+              addSysMsg(`❤ 拾取了补给包，回复 ${msg.data.healed} HP`);
+              if (players[myId]) { players[myId].hp = msg.data.hp; players[myId].maxHp = msg.data.maxHp; }
+            }
+          }
+          delete healthPacks[msg.data.packId];
           break;
         }
 
@@ -2420,6 +2444,35 @@
       }
     }
 
+    // ── 生命补给包 ────────────────────────────────────────────────────
+    function drawHealthPacks() {
+      for (const id in healthPacks) {
+        const p = healthPacks[id];
+        if (!isVisible(p.x, p.y, 36)) continue;
+        const sx = Math.round(p.x - camera.x), sy = Math.round(p.y - camera.y);
+        const bob = Math.sin(frame * 0.07 + p.id * 0.5) * 3;
+        const pulse = 0.5 + 0.5 * Math.sin(frame * 0.09 + p.id);
+        // 地面阴影
+        ctx.save(); ctx.globalAlpha = 0.25; ctx.fillStyle = '#000';
+        ctx.beginPath(); ctx.ellipse(sx, sy + 8, 10, 4, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+        // 绿色光晕
+        const gr = ctx.createRadialGradient(sx, sy - bob, 2, sx, sy - bob, 22);
+        gr.addColorStop(0, 'rgba(51,255,136,0.5)'); gr.addColorStop(1, 'transparent');
+        ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(sx, sy - bob, 22, 0, Math.PI * 2); ctx.fill();
+        // 红十字方块底
+        const bx = sx - 10, by = sy - bob - 12;
+        ctx.fillStyle = '#cc2233';
+        ctx.beginPath(); ctx.roundRect(bx, by, 20, 20, 4); ctx.fill();
+        // 白色十字
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(bx + 8, by + 3, 4, 14);  // 竖
+        ctx.fillRect(bx + 3, by + 8, 14, 4);  // 横
+        // 脉冲外环
+        ctx.save(); ctx.strokeStyle = '#33ff88'; ctx.globalAlpha = 0.3 + 0.5 * pulse; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(sx, sy - bob - 2, 15, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+      }
+    }
+
     // ── 飞行物(法球/箭)+ 重击震波环 ────────────────────────────────────
     function spawnProjectile(x, y, dir, kind) {
       const spd = kind === 'arrow' ? 15 : 10;
@@ -2706,6 +2759,12 @@
         mmCtx.fillStyle = RARITY_COLOR[d.rarity] || '#b5c6d6';
         mmCtx.fillRect(d.x * sx - 1, d.y * sy - 1, 2, 2);
       }
+      // 生命补给包(绿色小点)
+      for (const id in healthPacks) {
+        const p = healthPacks[id];
+        mmCtx.fillStyle = '#33ff88';
+        mmCtx.fillRect(p.x * sx - 1, p.y * sy - 1, 2, 2);
+      }
 
       for (const [id, p] of Object.entries(players)) {
         if (p.isDead) continue;
@@ -2814,8 +2873,9 @@
       // 石(碰撞体,玩家之下)
       for (const o of rocks) drawObstacle(o);
 
-      // 地面层:武器掉落物 + 重击震波环(均在玩家之下,可被玩家覆盖)
+      // 地面层:武器掉落物 + 生命补给包 + 重击震波环(均在玩家之下,可被玩家覆盖)
       drawDrops();
+      drawHealthPacks();
       drawShockwaves();
 
       // ── Enemies + Players sorted together by Y ──────────────────

@@ -65,6 +65,14 @@ export const GameConfig = {
   WEAPON_PICKUP_GRACE: 700, // 掉落后多久才可被拾取(ms):留出时间让掉落物在地上可见,避免贴身击杀瞬间被吞
   WEAPON_DROP_TTL: 45000, // 掉落物存活时长(ms),超时自然消失
 
+  // 生命补给包(战场随机刷新,走近自动拾取回血)
+  HP_PACK_MAX: 3,            // 地图上同时最多 N 个补给包
+  HP_PACK_INTERVAL: 25000,   // 每 25s 尝试补刷一个(未满上限时)
+  HP_PACK_HEAL: 40,          // 每包回复血量
+  HP_PACK_TTL: 60000,        // 无人拾取 60s 后自然消失
+  HP_PACK_PICKUP_RADIUS: 30, // 走到距包中心多近算拾取
+  HP_PACK_PICKUP_GRACE: 500, // 刷出后 500ms 内不可拾取(让包先在地上「亮相」)
+
   // 迷雾探索
   FOG_CELL_SIZE: 100,       // 探索网格粒度(px)
   FOG_REVEAL_RADIUS: 400,   // 玩家视野揭雾半径(px)
@@ -81,13 +89,16 @@ export const GameConfig = {
   LLM_STATIC_HOLD_MULT: 3,      // 情形未变时,决策保持 间隔×该倍数 才重算(静态场景省 ~2/3 调用)
   LLM_MAX_OUTPUT_TOKENS: 160,   // 云端单次决策输出上限(JSON 很小,无需 400)
 
-  // ── 分层路由:战术场景改用本地 Ollama 小模型(省云端 token),对话仍走云端 ──
-  // 默认关闭;需先 `ollama pull deepseek-r1:14b` 并 `ollama serve`,再置 LLM_LOCAL_ENABLED=1
+  // ── 本地模型:开关一开,全部 LLM 调用(战术 + 对话)都走本地 Ollama,不再访问云端 ──
+  // 默认关闭;需先 `ollama pull qwen3.5:9b` 并 `ollama serve`,再置 LLM_LOCAL_ENABLED=1
+  // 走 Ollama 原生 /api/chat(而非 /v1):唯有它支持 think 开关,关思考后 Qwen3 从 48s→~1s
   LLM_LOCAL_ENABLED: process.env.LLM_LOCAL_ENABLED === '1',
-  LLM_LOCAL_URL: process.env.LLM_LOCAL_URL ?? 'http://localhost:11434/v1/chat/completions',
-  LLM_LOCAL_MODEL: process.env.LLM_LOCAL_MODEL ?? 'mistral',
-  LLM_LOCAL_MAX_TOKENS: 200,    // mistral 非推理模型,输出仅小 JSON,无需大预算(换回 R1 类需调大到 ~1024 容纳思维链)
-  LLM_LOCAL_TIMEOUT_MS: 20000,  // 本地推理慢,超时即回退 Mock,保证不卡住游戏循环
+  LLM_LOCAL_URL: process.env.LLM_LOCAL_URL ?? 'http://localhost:11434/api/chat',
+  LLM_LOCAL_MODEL: process.env.LLM_LOCAL_MODEL ?? 'qwen3.5:9b',
+  LLM_LOCAL_THINK: process.env.LLM_LOCAL_THINK === '1', // 默认关思考:推理模型思考会慢到分钟级且常截断
+  LLM_LOCAL_MAX_TOKENS: 256,    // 关思考后答案就是一小段 JSON,256 足够(开 think 需自行调大)
+  LLM_LOCAL_TIMEOUT_MS: 30000,  // 首次调用含模型冷加载,给足超时;超时即回退 Mock,不卡住游戏循环
+  LLM_LOG_DIALOGUE: true,       // 后台打印每次 NPC 决策/对话(含实际产出的模型来源)
   LLM_NPC_COUNT: 2,             // 新手草原固定刷几只 LLM 守卫
   LLM_MEMORY_MAX: 16,           // 每个 NPC episodic 记忆条数上限
   LLM_QUEST_DEFAULT_COUNT: 3,   // 默认委托击杀数量

@@ -171,8 +171,9 @@ LLM NPC 可攻击普通怪物（非 LLM 敌人）：
 | `LLM_ENGAGE_RANGE_MULT` | `1.5` | 玩家进入 `detectionRange×` 该倍数才值得调用 |
 | `LLM_STATIC_HOLD_MULT` | `3` | 情形不变则保持 `间隔×` 该倍数才重算 |
 | `LLM_MAX_OUTPUT_TOKENS` | `160` | 云端单次输出上限 |
-| `LLM_LOCAL_ENABLED` | `false` | 战术场景改走本地 Ollama |
-| `LLM_LOCAL_MODEL` | `mistral` | 本地模型(非推理,快;R1 类见 §16.3) |
+| `LLM_LOCAL_ENABLED` | `false` | 开启后**全部** LLM 调用走本地 Ollama |
+| `LLM_LOCAL_MODEL` | `qwen3.5:9b` | 本地模型(见 §16.3) |
+| `LLM_LOG_DIALOGUE` | `true` | 后台打印每次决策/对话 + 模型来源 |
 | `DEEPSEEK_API_KEY` | `.env` | 空则用 Mock |
 
 ## 14. NPC Agent 记忆（已实现）
@@ -229,28 +230,28 @@ LLM NPC 可攻击普通怪物（非 LLM 敌人）：
 
 > 综合常在 **70–90%** token 削减，聊天响应与 BT 驱动行为完全保留。
 
-### 16.3 分层路由到本地小模型（`TieredLLMProvider`）
+### 16.3 全量切换到本地模型（`LLM_LOCAL_ENABLED=1`）
 
-进一步把高频、玩家看不到台词的**战术决策**下放到本地 Ollama（免费），仅把玩家会读到的**对话**留给云端强模型：
+开关一开,`createLLMProvider` 直接返回本地 Provider,**所有 LLM 决策(战术刷新 + 玩家对话)都走本地 Ollama**,不再访问云端(省全部云端 token,离线可玩)。关闭时才回到「有 key 走云端、无 key 走 Mock」。
 
 ```
-classifyScenario(snapshot):
-  有 chatText → 'social'  → 云端(DeepSeek)   —— 质量优先,玩家在读
-  否则        → 'tactical' → 本地(mistral via Ollama) —— 省钱
+LLM_LOCAL_ENABLED=1 → 全部 → 本地(qwen3.5:9b via Ollama)
+LLM_LOCAL_ENABLED=0 → 有 DEEPSEEK_API_KEY → 云端;否则 → Mock 规则引擎
 ```
 
 落地要点：
-- **默认用 mistral**（非推理模型）：实测冷启约 9s、热调用约 2s,输出即小 JSON,`LLM_LOCAL_MAX_TOKENS=200` 足够。
-- **兼容推理模型**：若换 `LLM_LOCAL_MODEL=deepseek-r1:14b`,其输出内联 `<think>…</think>`,`extractMessageContent` 用 `stripThink` 剥离后再解析;此时需把 `LLM_LOCAL_MAX_TOKENS` 调大到 ~1024 容纳思维链,且延迟升到约 20s/次。
-- **只放异步低可见的战术决策**：BT 在等待期间继续执行上一意图,不卡帧;`LLM_LOCAL_TIMEOUT_MS` 超时即回退 Mock。
-- **自愈**：任何传输/超时/解析失败都降级到 Mock 规则引擎,游戏永不因 LLM 阻塞。
+- **走 Ollama 原生 `/api/chat`,不走 `/v1`**(`OllamaProvider`):默认模型 `qwen3.5:9b` 是**推理模型**,在 OpenAI 兼容 `/v1` 端点上无法关闭思维链——token 预算全耗在 reasoning、`content` 恒空(实测 **48s** 仍无答案)。原生端点支持 `think:false` 一键关思考 → 实测 **~1s** 直接吐 `{"intent":...}`。是否思考由 `LLM_LOCAL_THINK` 控制(默认关)。
+- **答案短**:关思考后输出就是一小段 JSON,`LLM_LOCAL_MAX_TOKENS=256` 足够(开 `think` 需自行调大)。
+- **不卡帧**:决策异步,BT 在等待期间继续执行上一意图;`LLM_LOCAL_TIMEOUT_MS`(30s,含首次冷加载)超时即回退 Mock。
+- **自愈**:任何传输/超时/解析失败都降级到 Mock 规则引擎,游戏永不因 LLM 阻塞。防御性 `stripThink` 仍保留(开 think 或换内联 `<think>` 的模型时兜底)。
+- **后台日志**(`LLM_LOG_DIALOGUE`):每次决策打印 `[NPC对话] 名字#id [模型来源] → intent 💬台词 · reason`,`模型来源` 形如 `local:qwen3.5:9b` / `local:mock(回退)`,便于确认实际走了哪个模型。
 
-**启用**：`ollama pull mistral && ollama serve`，再 `LLM_LOCAL_ENABLED=1 npm start`。
+**启用**:`ollama pull qwen3.5:9b && ollama serve`,再 `LLM_LOCAL_ENABLED=1 npm start`。
 
 ## 17. 其它扩展方向
 
 - **记忆**：~~把最近 N 轮对话写入 snapshot~~ ✅ `src/ai/llm/memory.ts`
-- **本地模型**：~~换 `LLMProvider` 接 Ollama / vLLM~~ ✅ 见 §16.3
+- **本地模型**：~~换 `LLMProvider` 接 Ollama / vLLM~~ ✅ 见 §16.3(`LLM_LOCAL_ENABLED=1` 全量走本地)
 - **多 NPC 协商**：~~一个 Brain 批次推理多个 NPC~~ ✅ 见 [12 · 多 Agent 协作](12-NPC-Agent趣味增强.md)（共享黑板 + leader 播报式）
 - **工具调用**：LLM 返回 `use_skill:fireball`，BT 增加对应 Action 叶子
 

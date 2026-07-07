@@ -15,6 +15,8 @@ export interface LLMDirective {
   speech?: string;
   /** 决策理由(调试/日志) */
   reason?: string;
+  /** 实际产出该决策的 provider 标识(如 local:mistral / cloud:deepseek-v4-flash / mock),用于后台日志 */
+  via?: string;
   decidedAt: number;
 }
 
