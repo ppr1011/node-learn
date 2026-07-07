@@ -1,3 +1,4 @@
+import './loadEnv';
 import { GameWorld } from './core/GameWorld';
 import { GameWebSocketServer } from './network/WebSocketServer';
 import { GameConfig } from './config';
@@ -46,4 +47,10 @@ process.on('unhandledRejection', (reason) => {
 
 logger.info(`=== MMO-Lite Game Server ===`);
 logger.info(`Port: ${GameConfig.PORT} | Map: ${GameConfig.MAP_WIDTH}x${GameConfig.MAP_HEIGHT}`);
+if (GameConfig.LLM_ENABLED) {
+  const mode = GameConfig.LLM_API_KEY
+    ? `DeepSeek(${GameConfig.LLM_MODEL})`
+    : 'LLM(Mock, 请配置 .env 中的 DEEPSEEK_API_KEY)';
+  logger.info(`AI: BehaviorTree + ${mode} | NPCs: ${GameConfig.LLM_NPC_COUNT}`);
+}
 logger.info(`Open client/index.html in browser to play`);

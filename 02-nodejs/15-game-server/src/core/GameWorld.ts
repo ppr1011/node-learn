@@ -113,6 +113,7 @@ export class GameWorld {
     // 按难度带刷怪:每条带在带内随机取该带允许的种类,并套用该带的属性倍率
     // (深层带怪更硬更值钱)。落点用带内拒绝采样避障,与 findSafeSpawn 同一思路。
     this.spawnEnemiesByZone();
+    this.spawnLlmNpcs();
 
     this.timer = new GameTimer(GameConfig.TICK_RATE, (dt) => this.tick(dt));
   }
@@ -347,6 +348,31 @@ export class GameWorld {
         this.enemies.set(enemy.id, enemy);
       }
     }
+  }
+
+  /** 在新手草原刷几只 LLM 战术 NPC(行为树执行 + 大模型决策) */
+  private spawnLlmNpcs(): void {
+    if (!GameConfig.LLM_ENABLED || GameConfig.LLM_NPC_COUNT <= 0) return;
+
+    const zone = ZONES[0]!;
+    const personas: Array<{ name: string; personality: string; kind: EnemyKind }> = [
+      { name: '守卫·艾伦', personality: '友善但警惕的草原守卫', kind: 'skeleton' },
+      { name: '史莱姆贤者', personality: '话多、胆小、爱吐槽', kind: 'slime' },
+      { name: '密林斥候', personality: '冷静寡言的侦察者', kind: 'demon' },
+    ];
+
+    for (let i = 0; i < GameConfig.LLM_NPC_COUNT; i++) {
+      const p = personas[i % personas.length]!;
+      const radius = new Enemy(p.kind, 0, 0).radius;
+      const pos = this.findSafeSpawnInZone(zone, radius);
+      const enemy = new Enemy(p.kind, pos.x, pos.y, 1, zone.id);
+      enemy.llmEnabled = true;
+      enemy.displayName = p.name;
+      enemy.personality = p.personality;
+      enemy.llmLastRefresh = 0;
+      this.enemies.set(enemy.id, enemy);
+    }
+    logger.info(`[LLM] 已生成 ${GameConfig.LLM_NPC_COUNT} 只战术 NPC`);
   }
 
   /** 拒绝采样找一个不与任何障碍物重叠的出生点;新玩家出生在最左的新手带 */

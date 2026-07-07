@@ -30,5 +30,8 @@ export class ChatSystem {
     for (const other of nearby) {
       other.session.send(MsgType.CHAT_MSG, chatMsg);
     }
+
+    // 通知 LLM NPC:附近有玩家说话
+    this.world.enemyAI.onPlayerChat(player, sanitized);
   }
 }

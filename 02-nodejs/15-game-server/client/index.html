@@ -1656,8 +1656,8 @@
         ctx.restore();
       }
 
-      // Name/kind label
-      const label = vis.label || e.kind;
+      // Name/kind label(LLM NPC 显示 displayName)
+      const label = e.displayName || vis.label || e.kind;
       ctx.font = 'bold 10px Courier New';
       ctx.textAlign = 'center';
       const tw = ctx.measureText(label).width;
@@ -1667,7 +1667,7 @@
       ctx.fillStyle = '#000';
       ctx.fillRect(sx - tw / 2 - 4, nameY - 10, tw + 8, 13);
       ctx.restore();
-      ctx.fillStyle = vis.color;
+      ctx.fillStyle = e.llmEnabled ? '#ffd23f' : (vis.color || '#aabbcc');
       ctx.fillText(label, sx, nameY);
 
       // HP bar

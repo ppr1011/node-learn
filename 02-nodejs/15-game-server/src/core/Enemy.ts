@@ -1,4 +1,5 @@
 import { Entity } from './Entity';
+import { LLMDirective } from '../ai/llm/types';
 
 export type EnemyKind = 'slime' | 'skeleton' | 'demon' | 'orc' | 'wraith' | 'golem' | 'dragon';
 export type EnemyAIState = 'idle' | 'patrol' | 'chase' | 'attack' | 'flee';
@@ -62,6 +63,14 @@ export class Enemy extends Entity {
   idleTimer: number = 0; // seconds remaining in current idle pause
   enraged: boolean = false; // demon 残血狂暴:一旦触发保持,速度提升(行为树 chase 分支设置)
 
+  // LLM 战术层(仅 llmEnabled 的 NPC 使用)
+  llmEnabled: boolean = false;
+  displayName: string = '';
+  personality: string = '';
+  llmDirective: LLMDirective | null = null;
+  llmLastRefresh: number = 0;
+  llmChatPending: { from: string; text: string; at: number } | null = null;
+
   readonly attackDamage: number;
   readonly attackRange: number;
   readonly detectionRange: number;
@@ -119,6 +128,8 @@ export class Enemy extends Entity {
     this.targetPlayerId = null;
     this.lastAttackTime = 0;
     this.enraged = false;
+    this.llmDirective = null;
+    this.llmChatPending = null;
     this.idleTimer = 1 + Math.random() * 2;
     this.respawnAt = 0;
     this.position.x = x;
@@ -127,7 +138,7 @@ export class Enemy extends Entity {
   }
 
   toPublicState() {
-    return {
+    const state: Record<string, unknown> = {
       id: this.id,
       kind: this.kind,
       x: Math.round(this.position.x),
@@ -137,5 +148,10 @@ export class Enemy extends Entity {
       isDead: this.isDead,
       state: this.aiState,
     };
+    if (this.llmEnabled && this.displayName) {
+      state.displayName = this.displayName;
+      state.llmEnabled = true;
+    }
+    return state;
   }
 }

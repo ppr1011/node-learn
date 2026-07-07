@@ -21,6 +21,7 @@
 ```bash
 cd 02-nodejs/15-game-server
 npm install
+cp .env.example .env   # 填入 DeepSeek API Key，见 docs/11-LLM行为树.md
 npm start
 ```
 
@@ -29,7 +30,7 @@ npm start
 - **WASD** / 方向键：移动
 - **空格**：攻击（近距离自动瞄准最近目标）
 - **击杀敌人**：按几率掉落随机武器，走过去即自动拾取装备（不同武器改变伤害/距离/冷却与攻击动画）
-- **Enter**：发送聊天消息
+- **Enter**：发送聊天消息（靠近金色名字的 LLM NPC 可对话，默认接 [DeepSeek API](https://api-docs.deepseek.com/zh-cn/)）
 
 ---
 
@@ -80,6 +81,7 @@ npm start
 | [08 · 天气视觉增强](docs/08-天气视觉增强.md) | 分层景深粒子、地面涟漪、闪电、体积雾、色调分级、平滑过渡、程序化/贴图双范式 | `client/index.html`、`client/assets/weather/`、`spawn/definitions/weather.ts` |
 | [09 · 行为树 AI](docs/09-行为树AI.md) | FSM vs 行为树、组合/装饰/叶子节点、running 语义、敌人 AI 重构、slime 逃跑 / demon 狂暴 | `ai/bt/*`、`systems/EnemyAISystem.ts`、`core/Enemy.ts` |
 | [10 · 武器与掉落系统](docs/10-武器与掉落系统.md) | 击杀掉落、加权稀有度、拾取装备、武器化攻击动画、飞行物/震波、CC0 贴图 | `core/Weapon.ts`、`core/WeaponDrop.ts`、`core/GameWorld.ts`、`systems/CombatSystem.ts`、`client/index.html` |
+| [11 · LLM + 行为树 AI](docs/11-LLM行为树.md) | LLM 大脑 + BT 身体、异步战术决策、聊天触发、Mock/OpenAI Provider | `ai/llm/*`、`ai/bt/llmNpcTree.ts`、`systems/EnemyAISystem.ts`、`systems/ChatSystem.ts` |
 
 ---
 

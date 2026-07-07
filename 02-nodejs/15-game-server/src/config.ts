@@ -68,4 +68,13 @@ export const GameConfig = {
   // 迷雾探索
   FOG_CELL_SIZE: 100,       // 探索网格粒度(px)
   FOG_REVEAL_RADIUS: 400,   // 玩家视野揭雾半径(px)
+
+  // LLM 战术 NPC(行为树 + DeepSeek 大模型大脑)
+  // 默认接 DeepSeek 官方 API: https://api-docs.deepseek.com/zh-cn/
+  LLM_ENABLED: true,
+  LLM_API_URL: process.env.LLM_API_URL ?? 'https://api.deepseek.com/chat/completions',
+  LLM_API_KEY: process.env.DEEPSEEK_API_KEY ?? process.env.LLM_API_KEY ?? '',
+  LLM_MODEL: process.env.LLM_MODEL ?? 'deepseek-v4-flash',
+  LLM_DECISION_INTERVAL_MS: 4000, // 定时战术刷新间隔(聊天可立即触发)
+  LLM_NPC_COUNT: 2,             // 新手草原固定刷几只 LLM 守卫
 } as const;
