@@ -432,6 +432,7 @@
     let mapObjects = [];
     let obstacles = [];   // 服务端权威下发的碰撞障碍物
     let enemies = {};     // id → enemy state (from server)
+    const speechBubbles = new Map(); // entityId → { text, expiresAt } (NPC 用负 id)
     let drops = {};       // id → 地面武器掉落物 { id, kind, rarity, x, y }
     let projectiles = []; // 飞行物(法球等),世界坐标
     let shockwaves = [];  // 重击落地震波环,世界坐标
@@ -887,6 +888,9 @@
 
         case 's_chat':
           addChatMsg(msg.data.from, msg.data.text);
+          if (msg.data.fromId != null) {
+            showSpeechBubble(msg.data.fromId, msg.data.text);
+          }
           break;
 
         case 's_damage': {
@@ -1029,6 +1033,106 @@
       d.innerHTML = `<span class="name">${esc(name)}:</span> <span class="text">${esc(text)}</span>`;
       chatBox.appendChild(d);
       chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function showSpeechBubble(entityId, text) {
+      speechBubbles.set(entityId, {
+        text: String(text).slice(0, 80),
+        expiresAt: performance.now() + 4500,
+      });
+    }
+
+    function wrapBubbleText(ctx, text, maxWidth) {
+      const chars = [...text];
+      const lines = [];
+      let line = '';
+      for (const ch of chars) {
+        const test = line + ch;
+        if (ctx.measureText(test).width > maxWidth && line) {
+          lines.push(line);
+          line = ch;
+        } else {
+          line = test;
+        }
+      }
+      if (line) lines.push(line);
+      return lines.slice(0, 3);
+    }
+
+    function drawSpeechBubbles() {
+      const now = performance.now();
+      for (const [entityId, bubble] of speechBubbles) {
+        if (now > bubble.expiresAt) {
+          speechBubbles.delete(entityId);
+          continue;
+        }
+
+        let wx, wy;
+        if (entityId < 0) {
+          const en = enemies[-entityId];
+          if (!en || en.isDead) { speechBubbles.delete(entityId); continue; }
+          wx = en.x ?? en.targetX ?? 0;
+          wy = en.y ?? en.targetY ?? 0;
+        } else {
+          const p = players[entityId];
+          if (!p || p.isDead) { speechBubbles.delete(entityId); continue; }
+          wx = p.x ?? p.targetX ?? 0;
+          wy = p.y ?? p.targetY ?? 0;
+        }
+        if (!isVisible(wx, wy, 120)) continue;
+
+        const alpha = Math.min(1, (bubble.expiresAt - now) / 600);
+        const sx = Math.round(wx - camera.x);
+        const sy = Math.round(wy - camera.y - 52);
+        const isNpc = entityId < 0;
+        const padX = 8, padY = 6, lineH = 13, maxW = 130;
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.font = '11px Courier New';
+        ctx.textAlign = 'left';
+        const lines = wrapBubbleText(ctx, bubble.text, maxW);
+        const textW = Math.max(...lines.map(l => ctx.measureText(l).width), 20);
+        const boxW = textW + padX * 2;
+        const boxH = lines.length * lineH + padY * 2;
+        const bx = sx - boxW / 2;
+        const by = sy - boxH;
+
+        ctx.fillStyle = isNpc ? 'rgba(30,28,10,0.88)' : 'rgba(10,20,18,0.88)';
+        ctx.strokeStyle = isNpc ? 'rgba(255,210,63,0.9)' : 'rgba(78,204,163,0.85)';
+        ctx.lineWidth = 1.5;
+        roundRect(ctx, bx, by, boxW, boxH, 6);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(sx - 5, by + boxH);
+        ctx.lineTo(sx, by + boxH + 7);
+        ctx.lineTo(sx + 5, by + boxH);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = isNpc ? '#ffe9a8' : '#d8fff0';
+        lines.forEach((line, i) => {
+          ctx.fillText(line, bx + padX, by + padY + lineH * (i + 0.85));
+        });
+        ctx.restore();
+      }
+    }
+
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
     }
 
     function esc(s) {
@@ -2340,6 +2444,7 @@
         if (item.tag === 'player') drawPlayer(item.obj, item.id);
         else drawEnemy(item.obj);
       }
+      drawSpeechBubbles();
       // Dead enemies rendered as faint markers (behind everything)
       for (const e of Object.values(enemies)) if (e.isDead) drawEnemy(e);
 

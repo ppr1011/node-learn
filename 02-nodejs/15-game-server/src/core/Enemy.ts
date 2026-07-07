@@ -59,8 +59,10 @@ export class Enemy extends Entity {
   // AI internal state
   patrolTarget: { x: number; y: number } | null = null;
   targetPlayerId: number | null = null;
+  targetEnemyId: number | null = null; // LLM NPC 狩猎普通怪物
   lastAttackTime: number = 0;
   idleTimer: number = 0; // seconds remaining in current idle pause
+  llmPoseTimer: number = 0; // taunt 站定计时(与 patrol 的 idleTimer 分离)
   enraged: boolean = false; // demon 残血狂暴:一旦触发保持,速度提升(行为树 chase 分支设置)
 
   // LLM 战术层(仅 llmEnabled 的 NPC 使用)
@@ -70,6 +72,8 @@ export class Enemy extends Entity {
   llmDirective: LLMDirective | null = null;
   llmLastRefresh: number = 0;
   llmChatPending: { from: string; text: string; at: number } | null = null;
+  followPlayerId: number | null = null; // 跟随模式:持久绑定玩家 id
+  followBoostTimer: number = 0; // 「走快点」临时加速(秒)
 
   readonly attackDamage: number;
   readonly attackRange: number;
@@ -126,10 +130,14 @@ export class Enemy extends Entity {
     this.aiState = 'idle';
     this.patrolTarget = null;
     this.targetPlayerId = null;
+    this.targetEnemyId = null;
     this.lastAttackTime = 0;
     this.enraged = false;
     this.llmDirective = null;
     this.llmChatPending = null;
+    this.llmPoseTimer = 0;
+    this.followPlayerId = null;
+    this.followBoostTimer = 0;
     this.idleTimer = 1 + Math.random() * 2;
     this.respawnAt = 0;
     this.position.x = x;

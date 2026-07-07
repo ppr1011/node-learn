@@ -7,7 +7,7 @@
 
 import { LLMDirective, LLMGameSnapshot, LLMIntent } from './types';
 
-const VALID_INTENTS: LLMIntent[] = ['attack', 'flee', 'patrol', 'taunt'];
+const VALID_INTENTS: LLMIntent[] = ['attack', 'flee', 'patrol', 'taunt', 'hunt', 'follow'];
 
 export interface LLMProvider {
   decide(snapshot: LLMGameSnapshot): Promise<LLMDirective>;
@@ -42,8 +42,8 @@ function parseDirective(raw: string, now: number): LLMDirective | null {
 function buildSystemPrompt(): string {
   return [
     '你是 MMO 游戏里的 NPC 战术大脑。根据世界快照输出 JSON,不要 markdown。',
-    '字段: intent(attack|flee|patrol|taunt), speech(可选,中文,≤40字), reason(可选,简短)。',
-    '规则:残血优先 flee;玩家友好聊天可 patrol 或 taunt;玩家很近且血量健康可 attack。',
+    '字段: intent(attack|flee|patrol|taunt|hunt|follow), speech(可选,中文,≤40字), reason(可选,简短)。',
+    '规则:残血 flee;玩家说跟着/一起走用 follow;附近刷怪 hunt;友好闲聊 patrol;挑衅 attack。',
     '只输出一行 JSON,例如:{"intent":"patrol","speech":"欢迎来到新手草原。","reason":"无威胁"}',
   ].join('\n');
 }
@@ -57,6 +57,8 @@ function buildUserPrompt(s: LLMGameSnapshot): string {
     `NPC:${s.npcName}(${s.kind}),性格:${s.personality}`,
     `自身:HP ${s.hp}/${s.maxHp},状态 ${s.aiState},坐标(${s.x},${s.y}),区域 ${s.zoneName},天气 ${s.weather}`,
     `附近玩家:${players}`,
+    `附近怪物数量:${s.nearbyMobCount}`,
+    `正在跟随玩家:${s.isFollowing ? '是' : '否'}`,
     chat,
   ].filter(Boolean).join('\n');
 }
@@ -119,7 +121,32 @@ export class MockLLMProvider implements LLMProvider {
       };
     }
 
+    if (snapshot.nearbyMobCount > 0 && hpRatio > 0.4) {
+      return {
+        intent: 'hunt',
+        speech: '发现怪物,我来清理!',
+        reason: '附近刷怪(Mock)',
+        decidedAt: now,
+      };
+    }
+
+    if (snapshot.isFollowing) {
+      return {
+        intent: 'follow',
+        reason: '维持跟随(Mock)',
+        decidedAt: now,
+      };
+    }
+
     if (snapshot.chatText) {
+      if (/跟着我|跟随|follow|一起走|跟我走|跟上/.test(text)) {
+        return {
+          intent: 'follow',
+          speech: `好的,${snapshot.chatFrom},我跟你走。`,
+          reason: '玩家邀请跟随(Mock)',
+          decidedAt: now,
+        };
+      }
       if (/你好|hello|hi|嗨|在吗/.test(text)) {
         return {
           intent: 'patrol',

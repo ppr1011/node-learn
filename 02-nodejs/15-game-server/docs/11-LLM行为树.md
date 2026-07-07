@@ -14,7 +14,7 @@
 ┌──────────────────────────────────────────────┐
 │  LLM Brain (异步, 3~4s 或聊天触发)            │
 │  观察世界快照 → 输出 intent + 可选台词        │
-│  intent ∈ { attack, flee, patrol, taunt }    │
+│  intent ∈ { attack, flee, patrol, taunt, hunt, follow } │
 └──────────────────┬───────────────────────────┘
                    │ 写入 enemy.llmDirective
 ┌──────────────────▼───────────────────────────┐
@@ -106,14 +106,46 @@ npm start
 | `MockLLMProvider` | 未配置 `DEEPSEEK_API_KEY` |
 | `OpenAICompatibleProvider` | 已配置 Key，默认走 DeepSeek；改 `LLM_API_URL` 可切 OpenAI 等兼容端点 |
 
-## 7. 怎么体验
+## 7. 对话气泡
+
+客户端收到 `s_chat` 后，除右侧聊天栏外，还会在说话者头顶显示**对话气泡**（NPC 金色、玩家绿色），持续约 4.5 秒并跟随实体移动。
+
+## 8. NPC 不移动？已修复
+
+早期 `patrol` 分支写成 `Sequence(taunt → patrol)`，且 `taunt` 与 `patrol` **共用 `idleTimer`**。每 tick `taunt` 先跑并返回 `running`，`patrol` 永远进不去。
+
+修复：
+- `patrol` 意图 → 直接 `patrol`
+- `taunt` 意图 → 独立 `llmPoseTimer` 站定后再 `patrol`
+- 新增 `hunt` 意图 + 巡逻时自动清怪
+
+## 9. NPC 打怪
+
+LLM NPC 可攻击普通怪物（非 LLM 敌人）：
+- `hunt` 意图：主动狩猎
+- `patrol` / `taunt` / **跟随途中**：附近刷怪自动转入 `mobCombat` 子树
+- 击杀后怪物走正常复活流程，广播 `ENEMY_HIT` / `ENEMY_DEAD`
+
+## 10. NPC 跟随玩家
+
+对金色名字 NPC 说 **「跟着我」**（或「一起走」「跟上」），NPC 会：
+- **立即**绑定跟随（不等 LLM 返回）
+- 保持约 58px 间距跟在身后
+- 途中遇怪会顺手清怪，再继续跟
+- 说 **「走快点」** 临时加速 6 秒
+- 说 **「别跟了」** 解除跟随
+- 跟太远（>900px）自动解除
+
+跟随是**持久状态**：LLM 每 4 秒刷新时不会误切回 `patrol`。
+
+## 11. 怎么体验
 
 1. `npm start`，打开 `client/index.html`
 2. 在新手草原找**金色名字**的 NPC（如「守卫·艾伦」「史莱姆贤者」）
 3. 靠近后按 **Enter** 聊天，例如「你好」「这里危险吗」
 4. NPC 会通过范围聊天回复，并可能切换战术（追击/逃跑/巡逻）
 
-## 8. 配置旋钮（`src/config.ts`）
+## 12. 配置旋钮（`src/config.ts`）
 
 | 配置项 | 默认 | 含义 |
 |--------|------|------|
@@ -122,7 +154,7 @@ npm start
 | `LLM_DECISION_INTERVAL_MS` | `4000` | 定时战术刷新 |
 | `DEEPSEEK_API_KEY` | `.env` | 空则用 Mock |
 
-## 9. 扩展方向
+## 13. 扩展方向
 
 - **记忆**：把最近 N 轮对话写入 snapshot，做短期记忆
 - **工具调用**：LLM 返回 `use_skill:fireball`，BT 增加对应 Action 叶子

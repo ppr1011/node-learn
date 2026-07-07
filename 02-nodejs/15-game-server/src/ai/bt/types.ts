@@ -17,13 +17,14 @@ import { GameWorld } from '../../core/GameWorld';
 
 export type NodeStatus = 'success' | 'failure' | 'running';
 
-/** 黑板:一次 tick 的共享上下文。target 由 AcquireTarget 写入,供后续节点读取 */
+/** 黑板:一次 tick 的共享上下文。target / mobTarget 由探测节点写入 */
 export interface BTContext {
   enemy: Enemy;
   world: GameWorld;
   dt: number;
   now: number;
   target: Player | null;
+  mobTarget: Enemy | null;
 }
 
 export interface BTNode {

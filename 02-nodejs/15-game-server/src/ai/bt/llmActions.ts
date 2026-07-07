@@ -1,16 +1,51 @@
 /**
- * 行为树 —— LLM 战术叶子(读取 enemy.llmDirective,驱动具体动作)
- *
- * LLM 在 LLMBrain 里异步写入 directive;这里只做同步读取与执行,
- * 保证 BT tick 永不阻塞等待网络。
+ * 行为树 —— LLM 战术叶子 + NPC 狩猎怪物
  */
 
 import { BTContext, NodeStatus } from './types';
 import { LLMIntent } from '../llm/types';
-import { acquireTarget, inAttackRange, attack, chase, flee, patrol } from './enemyActions';
+import { GameConfig } from '../../config';
+import { MsgType } from '../../network/Protocol';
+import { Enemy } from '../../core/Enemy';
+import {
+  acquireTarget,
+  inAttackRange,
+  attack,
+  chase,
+  flee,
+  patrol,
+} from './enemyActions';
 
 function intent(ctx: BTContext): LLMIntent | null {
   return ctx.enemy.llmDirective?.intent ?? null;
+}
+
+function dist(ax: number, ay: number, bx: number, by: number): number {
+  return Math.hypot(ax - bx, ay - by);
+}
+
+function moveToward(self: Enemy, tx: number, ty: number, speed: number): void {
+  const dx = tx - self.position.x;
+  const dy = ty - self.position.y;
+  const d = Math.hypot(dx, dy);
+  if (d < 2) { self.velocity = { x: 0, y: 0 }; return; }
+  self.velocity = { x: (dx / d) * speed, y: (dy / d) * speed };
+}
+
+function broadcastNear(
+  ctx: BTContext,
+  x: number,
+  y: number,
+  type: MsgType,
+  data: unknown,
+  range: number
+): void {
+  for (const p of ctx.world.players.values()) {
+    if (p.isDead) continue;
+    if (dist(p.position.x, p.position.y, x, y) <= range) {
+      p.session.send(type, data);
+    }
+  }
 }
 
 export function hasLlmDirective(ctx: BTContext): boolean {
@@ -26,20 +61,160 @@ export function llmWantsAttack(ctx: BTContext): boolean {
 }
 
 export function llmWantsPatrol(ctx: BTContext): boolean {
-  const i = intent(ctx);
-  return i === 'patrol' || i === 'taunt';
+  return intent(ctx) === 'patrol';
 }
 
-/** taunt:原地站定短暂嘲讽,然后 success 让上层继续 */
-export function taunt(ctx: BTContext): NodeStatus {
-  const { enemy, dt } = ctx;
-  enemy.aiState = 'idle';
+export function llmWantsTaunt(ctx: BTContext): boolean {
+  return intent(ctx) === 'taunt';
+}
+
+export function llmWantsHunt(ctx: BTContext): boolean {
+  return intent(ctx) === 'hunt';
+}
+
+export function llmWantsFollow(ctx: BTContext): boolean {
+  return intent(ctx) === 'follow';
+}
+
+const FOLLOW_DIST = 58;
+const FOLLOW_MAX_DIST = 900;
+
+/** 解析跟随目标 → ctx.target */
+export function acquireFollowTarget(ctx: BTContext): boolean {
+  const { enemy, world } = ctx;
+  if (enemy.followPlayerId === null) return false;
+  const player = world.players.get(enemy.followPlayerId);
+  if (!player || player.isDead) {
+    enemy.followPlayerId = null;
+    ctx.target = null;
+    return false;
+  }
+  ctx.target = player;
+  return true;
+}
+
+/** 是否处于跟随模式(持久状态,不随 LLM 周期刷新丢失) */
+export function shouldFollow(ctx: BTContext): boolean {
+  return ctx.enemy.llmEnabled && ctx.enemy.followPlayerId !== null && acquireFollowTarget(ctx);
+}
+
+/** 跟随玩家:保持 FOLLOW_DIST 间距,过远则解除跟随 */
+export function followPlayer(ctx: BTContext): NodeStatus {
+  const { enemy, target, dt } = ctx;
+  if (!target) return 'failure';
+
+  if (enemy.followBoostTimer > 0) {
+    enemy.followBoostTimer -= dt;
+  }
+
+  const d = dist(enemy.position.x, enemy.position.y, target.position.x, target.position.y);
+  if (d > FOLLOW_MAX_DIST) {
+    enemy.followPlayerId = null;
+    return 'failure';
+  }
+
+  if (d <= FOLLOW_DIST) {
+    enemy.aiState = 'idle';
+    enemy.velocity = { x: 0, y: 0 };
+    return 'running';
+  }
+
+  const speedMul = enemy.followBoostTimer > 0 ? 1.3 : 0.95;
+  enemy.aiState = 'patrol';
+  moveToward(enemy, target.position.x, target.position.y, enemy.speed * speedMul);
+  return 'running';
+}
+
+/** 视野内有普通怪物(非 LLM NPC) */
+export function hasNearbyMob(ctx: BTContext): boolean {
+  return acquireMobTarget(ctx);
+}
+
+/** 探测最近普通怪物 → ctx.mobTarget */
+export function acquireMobTarget(ctx: BTContext): boolean {
+  const { enemy, world } = ctx;
+  let nearest: Enemy | null = null;
+  let min = enemy.detectionRange;
+  for (const other of world.enemies.values()) {
+    if (other.id === enemy.id || other.isDead || other.llmEnabled) continue;
+    const d = dist(enemy.position.x, enemy.position.y, other.position.x, other.position.y);
+    if (d < min) { min = d; nearest = other; }
+  }
+  ctx.mobTarget = nearest;
+  enemy.targetEnemyId = nearest ? nearest.id : null;
+  return !!nearest;
+}
+
+export function inMobAttackRange(ctx: BTContext): boolean {
+  const mob = ctx.mobTarget;
+  if (!mob) return false;
+  return dist(ctx.enemy.position.x, ctx.enemy.position.y, mob.position.x, mob.position.y) <= ctx.enemy.attackRange;
+}
+
+/** NPC 攻击普通怪物 */
+export function attackMob(ctx: BTContext): NodeStatus {
+  const { enemy, mobTarget, world, now } = ctx;
+  enemy.aiState = 'attack';
   enemy.velocity = { x: 0, y: 0 };
-  enemy.idleTimer -= dt;
-  if (enemy.idleTimer > 0) return 'running';
-  enemy.idleTimer = 1.2 + Math.random() * 0.8;
+  if (!mobTarget || mobTarget.isDead) return 'success';
+
+  if (now - enemy.lastAttackTime >= enemy.attackCooldown) {
+    enemy.lastAttackTime = now;
+    mobTarget.takeDamage(enemy.attackDamage);
+    const hitMsg = {
+      enemyId: mobTarget.id,
+      attackerId: -enemy.id,
+      damage: enemy.attackDamage,
+      enemyHp: mobTarget.hp,
+    };
+    broadcastNear(ctx, enemy.position.x, enemy.position.y, MsgType.ENEMY_HIT, hitMsg, enemy.detectionRange * 2);
+
+    if (mobTarget.isDead) {
+      const deadMsg = { enemyId: mobTarget.id, killerId: -enemy.id };
+      broadcastNear(ctx, enemy.position.x, enemy.position.y, MsgType.ENEMY_DEAD, deadMsg, enemy.detectionRange * 2);
+      mobTarget.respawnAt = Date.now() + GameConfig.ENEMY_RESPAWN_TIME;
+      ctx.mobTarget = null;
+      enemy.targetEnemyId = null;
+    }
+  }
   return 'success';
 }
 
-// 复用战斗叶子,供 LLM 树装配
+/** NPC 追击普通怪物 */
+export function chaseMob(ctx: BTContext): NodeStatus {
+  const { enemy, mobTarget } = ctx;
+  if (!mobTarget || mobTarget.isDead) return 'failure';
+  enemy.aiState = 'chase';
+  moveToward(enemy, mobTarget.position.x, mobTarget.position.y, enemy.speed);
+  return 'running';
+}
+
+/** taunt:短暂站定(用 llmPoseTimer,不占用 patrol 的 idleTimer) */
+export function taunt(ctx: BTContext): NodeStatus {
+  const { enemy, dt } = ctx;
+  if (enemy.llmPoseTimer <= 0) {
+    enemy.llmPoseTimer = 0.8;
+  }
+  enemy.aiState = 'idle';
+  enemy.velocity = { x: 0, y: 0 };
+  enemy.llmPoseTimer -= dt;
+  if (enemy.llmPoseTimer > 0) return 'running';
+  enemy.llmPoseTimer = 0;
+  return 'success';
+}
+
+/** 应主动狩猎:显式 hunt / 跟随途中顺路清怪 / 巡逻时附近刷怪 */
+export function shouldHuntMob(ctx: BTContext): boolean {
+  if (!ctx.enemy.llmEnabled) return false;
+  if (llmWantsFlee(ctx)) return false;
+  if (llmWantsHunt(ctx) || ctx.enemy.followPlayerId !== null) {
+    return acquireMobTarget(ctx);
+  }
+  const i = intent(ctx);
+  if (i === 'patrol' || i === 'taunt' || i === null) {
+    return acquireMobTarget(ctx);
+  }
+  return false;
+}
+
 export { acquireTarget, inAttackRange, attack, chase, flee, patrol };

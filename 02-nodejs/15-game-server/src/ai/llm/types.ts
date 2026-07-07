@@ -6,7 +6,7 @@
  */
 
 /** LLM 可输出的战术意图(白名单,防止模型幻觉出非法动作) */
-export type LLMIntent = 'attack' | 'flee' | 'patrol' | 'taunt';
+export type LLMIntent = 'attack' | 'flee' | 'patrol' | 'taunt' | 'hunt' | 'follow';
 
 /** 一次 LLM 决策的结果,挂在 enemy 黑板上供 BT 读取 */
 export interface LLMDirective {
@@ -36,6 +36,10 @@ export interface LLMGameSnapshot {
     hp: number;
     maxHp: number;
   }>;
+  /** 附近可狩猎的普通怪物数量 */
+  nearbyMobCount: number;
+  /** 当前是否正在跟随某玩家 */
+  isFollowing: boolean;
   /** 玩家刚发来的聊天(若有) */
   chatFrom?: string;
   chatText?: string;
