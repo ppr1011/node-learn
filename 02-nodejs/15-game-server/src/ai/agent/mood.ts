@@ -50,6 +50,10 @@ export class NpcMood {
     enemy.mood = clamp(enemy.mood + 15);
   }
 
+  static onHealed(enemy: Enemy): void {
+    enemy.mood = clamp(enemy.mood + 12);
+  }
+
   static shouldFleeBias(enemy: Enemy): boolean {
     return enemy.mood < -45 || enemy.hp / enemy.maxHp < 0.35;
   }

@@ -5,6 +5,7 @@ export enum MsgType {
   C_STOP = 'c_stop',
   C_CHAT = 'c_chat',
   C_ATTACK = 'c_attack',
+  C_CAST = 'c_cast', // 施放技能:{ skillId, targetId?, targetKind?, x?, y? }
   C_PING = 'c_ping',
 
   // Server -> Client
@@ -31,6 +32,11 @@ export enum MsgType {
 
   // Combat animation (每次攻击都广播,空挥也播动画;命中反馈仍走 DAMAGE/ENEMY_HIT)
   ATTACK = 's_attack',
+
+  // 英雄技能(治疗 / 火球 / 陨石雨)
+  SKILL_CAST = 's_skill_cast',
+  HEAL = 's_heal',
+  AOE_HIT = 's_aoe_hit',
 
   // Weapon drops(掉落 / 拾取 / 自然消失)
   ITEM_SPAWN = 's_item_spawn',

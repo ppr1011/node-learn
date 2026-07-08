@@ -175,6 +175,104 @@
       display: none;
       z-index: 5;
     }
+    /* 英雄技能栏 */
+    #skill-bar {
+      position: absolute;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 10px;
+      z-index: 6;
+      pointer-events: auto;
+    }
+    .skill-btn {
+      position: relative;
+      width: 62px;
+      height: 72px;
+      border: 2px solid #3a6a9a;
+      border-radius: 8px;
+      background: linear-gradient(180deg, rgba(18, 28, 48, 0.95) 0%, rgba(8, 12, 24, 0.92) 100%);
+      color: #cde;
+      font-size: 8px;
+      font-family: 'Courier New', monospace;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      line-height: 1.1;
+      padding: 4px 3px 3px;
+      overflow: hidden;
+      transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+    }
+    .skill-btn:hover, .skill-btn.preview-active {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+    }
+    .skill-btn .skill-icon-wrap {
+      position: relative;
+      width: 36px;
+      height: 36px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 3px;
+      background: rgba(0,0,0,0.35);
+      border: 1px solid rgba(255,255,255,0.08);
+      overflow: hidden;
+    }
+    .skill-btn .skill-icon {
+      width: 32px;
+      height: 32px;
+      object-fit: contain;
+      display: block;
+      image-rendering: pixelated;
+      filter: drop-shadow(0 1px 3px rgba(0,0,0,0.55));
+    }
+    .skill-btn .skill-icon-fallback {
+      position: absolute;
+      inset: 2px;
+      display: none;
+      image-rendering: pixelated;
+    }
+    .skill-btn.icon-fallback .skill-icon { display: none; }
+    .skill-btn.icon-fallback .skill-icon-fallback { display: block; }
+    .skill-btn .skill-name { color: #aab; letter-spacing: 0.5px; margin-bottom: 2px; }
+    .skill-btn .skill-keys { display: flex; gap: 3px; }
+    .skill-btn kbd {
+      display: inline-block;
+      min-width: 14px;
+      padding: 0 3px;
+      border-radius: 3px;
+      background: rgba(255,210,63,0.15);
+      border: 1px solid rgba(255,210,63,0.45);
+      color: #ffd23f;
+      font-size: 9px;
+      font-family: inherit;
+      line-height: 14px;
+      text-align: center;
+    }
+    .skill-btn kbd.alt { color: #9fd4ff; border-color: rgba(126,200,255,0.45); background: rgba(126,200,255,0.12); }
+    .skill-btn .cd-overlay {
+      position: absolute;
+      left: 0; right: 0; bottom: 0;
+      height: 0%;
+      background: rgba(0,0,0,0.62);
+      pointer-events: none;
+      border-radius: 0 0 6px 6px;
+    }
+    .skill-btn.heal { border-color: #2a8a5a; }
+    .skill-btn.heal:hover, .skill-btn.heal.preview-active { box-shadow: 0 0 14px rgba(51,255,136,0.25); }
+    .skill-btn.heal .skill-icon-wrap { background: radial-gradient(circle, rgba(51,255,136,0.18) 0%, transparent 70%); }
+    .skill-btn.fireball { border-color: #aa5522; }
+    .skill-btn.fireball:hover, .skill-btn.fireball.preview-active { box-shadow: 0 0 14px rgba(255,136,68,0.25); }
+    .skill-btn.fireball .skill-icon-wrap { background: radial-gradient(circle, rgba(255,136,68,0.2) 0%, transparent 70%); }
+    .skill-btn.meteor { border-color: #8844cc; }
+    .skill-btn.meteor:hover, .skill-btn.meteor.preview-active { box-shadow: 0 0 14px rgba(187,136,255,0.25); }
+    .skill-btn.meteor .skill-icon-wrap { background: radial-gradient(circle, rgba(187,136,255,0.18) 0%, transparent 70%); }
+    .skill-btn.target-locked { box-shadow: 0 0 12px rgba(255,224,102,0.45); border-color: #ffe066 !important; }
     /* Minimap */
     #minimap {
       position: absolute;
@@ -409,11 +507,16 @@
       <div id="chat-box"></div>
       <div id="controls">
         WASD · 移动 &nbsp; SPACE · 攻击<br>
+        <span style="color:#33ff88">J 治疗</span> &nbsp;
+        <span style="color:#ff8844">K 火球</span> &nbsp;
+        <span style="color:#bb88ff">L 陨石</span> &nbsp;
+        <span style="color:#ffe066">Tab 切换目标</span><br>
+        <span style="color:#bb88ff">I 锁定陨石落点 · O 切换预览</span><br>
         ENTER · 聊天 &nbsp; ESC · 关闭输入<br>
         <span style="color:#4ecca3">击杀敌人掉落武器 · 走过即拾取装备</span><br>
         <span style="color:#ffd23f">击杀获得经验 · 升级提升生命与攻击</span><br>
         <span style="color:#7ec8ff">点击金色 NPC · 自动寻路 | Shift+点击 · Agent 面板</span><br>
-        <span style="color:#365">T · 切天气 &nbsp; [ ] · 强度 &nbsp; Y · 复原</span>
+        <span style="color:#365">T · 切天气 &nbsp; [ ] · 强度 &nbsp; 0 · 复原</span>
       </div>
       <div id="chat-input-container">
         <input id="chat-input" placeholder="按 Enter 发送..." />
@@ -430,6 +533,32 @@
     <div id="npc-panel-body"></div>
   </div>
   <div id="quest-hud"></div>
+  <div id="skill-bar">
+    <button class="skill-btn heal" data-skill="heal" title="J 治疗 · 靠近自动选中 · Tab 切换目标">
+      <div class="skill-icon-wrap">
+        <canvas class="skill-icon-fallback" width="32" height="32"></canvas>
+        <img class="skill-icon" src="assets/skills/icons/icon-heal.png" width="32" height="32" alt="治疗">
+      </div>
+      <span class="skill-name">治疗</span>
+      <span class="skill-keys"><kbd>J</kbd></span>
+    </button>
+    <button class="skill-btn fireball" data-skill="fireball" title="K 火球 · 靠近自动锁定敌人 · Tab 切换">
+      <div class="skill-icon-wrap">
+        <canvas class="skill-icon-fallback" width="32" height="32"></canvas>
+        <img class="skill-icon" src="assets/skills/icons/icon-fireball.png" width="32" height="32" alt="火球">
+      </div>
+      <span class="skill-name">火球</span>
+      <span class="skill-keys"><kbd>K</kbd></span>
+    </button>
+    <button class="skill-btn meteor" data-skill="meteor" title="L 陨石 · 吸附最近怪 · I 锁定跟随">
+      <div class="skill-icon-wrap">
+        <canvas class="skill-icon-fallback" width="32" height="32"></canvas>
+        <img class="skill-icon" src="assets/skills/icons/icon-meteor.png" width="32" height="32" alt="陨石">
+      </div>
+      <span class="skill-name">陨石</span>
+      <span class="skill-keys"><kbd>L</kbd></span>
+    </button>
+  </div>
 
   <!-- 触屏操作层:虚拟摇杆 + 攻击/聊天按钮(仅触屏设备显示) -->
   <div id="touch-ui" class="touch-only">
@@ -507,6 +636,14 @@
     let projectiles = []; // 飞行物(法球等),世界坐标
     let shockwaves = [];  // 重击落地震波环,世界坐标
     let lastAttackAt = 0; // 本地最近一次成功发起攻击的时间(仅用于冷却环 HUD 估算)
+    let skillCastAt = { heal: 0, fireball: 0, meteor: 0 }; // 本地技能冷却估算
+    let skillPreview = null;       // 当前预览的技能 id(悬停/快捷键)
+    let skillRangePinned = false;  // 预览保持显示
+    let focusTarget = null;        // 单目标技能当前选中 { kind, id } — 靠近自动选中,Tab 切换
+    let skillLockTarget = null;    // 锁定实体 { kind, id } — AOE 落点跟随其移动
+    let skillAreaTarget = null;    // 当前瞄准实体(未锁定时随最近怪更新)
+    let skillPreviewTimer = null;
+    let skillAnims = []; // 技能特效动画 { kind, x, y, t, dur, ... }
     let frame = 0;        // 渲染帧计数(掉落物浮动/光环脉动用)
     let weather = { kind: 'clear', intensity: 0 }; // 服务端权威下发的全局天气(仅 kind + intensity)
     let dayPhase = 'day'; // 服务端权威下发的昼夜相位(dawn/day/dusk/night,功能7)
@@ -926,6 +1063,8 @@
           addSysMsg(`进入了游戏世界 (${mapWidth}x${mapHeight})`);
           updateXpBar();
           generateMap();
+          setTimeout(initSkillBarIcons, 50);
+          setTimeout(initSkillBarIcons, 900);
           break;
 
         case 's_enter':
@@ -1071,6 +1210,48 @@
         case 's_attack':
           triggerAttackAnim(msg.data);
           break;
+
+        case 's_skill_cast':
+          triggerSkillAnim(msg.data);
+          break;
+
+        case 's_heal': {
+          const d = msg.data;
+          let tx, ty;
+          if (d.targetKind === 'player') {
+            const t = players[d.targetId];
+            if (t) { t.hp = d.hp; t.maxHp = d.maxHp; tx = t.targetX ?? t.x; ty = t.targetY ?? t.y; }
+          } else {
+            const en = enemies[d.targetId];
+            if (en) { en.hp = d.hp; tx = en.targetX ?? en.x; ty = en.targetY ?? en.y; }
+          }
+          if (tx != null) {
+            spawnRing(tx, ty, '#33ff88', 18);
+            spawnDmgNumText(tx, ty - 10, `+${d.amount}`, '#33ff88');
+            spawnParticles(tx, ty, 12, { spdMin: 0.5, spdMax: 2.5, szMin: 2, szMax: 4, color: ['#33ff88', '#aaffcc', '#fff'], decay: 0.04 });
+          }
+          if (d.casterId === myId) addSysMsg(`✚ 治疗 +${d.amount} HP`);
+          break;
+        }
+
+        case 's_aoe_hit': {
+          const d = msg.data;
+          skillAnims.push({ kind: 'sheet', sheet: 'meteor', x: d.x, y: d.y, radius: d.radius, t: 0, dur: SKILL_FX.meteor.dur, fade: true });
+          screenShake = Math.max(screenShake, 14);
+          shockwaves.push({ x: d.x, y: d.y, r: 8, max: d.radius * 1.2, life: 1, color: '#ff8844', width: 5 });
+          spawnParticles(d.x, d.y, 24, { spdMin: 2, spdMax: 7, szMin: 3, szMax: 7, color: ['#ff6622', '#ffaa44', '#553311'], decay: 0.04, gravity: 0.12 });
+          for (const h of (d.hits || [])) {
+            if (h.kind === 'player') {
+              const t = players[h.id];
+              if (t) { t.hitFlash = 10; t.hp = h.hp; spawnHit(t.targetX ?? t.x, t.targetY ?? t.y, h.damage); spawnDmgNum(t.targetX ?? t.x, t.targetY ?? t.y, h.damage); }
+            } else {
+              const en = enemies[h.id];
+              if (en) { en.hitFlash = 8; en.hp = h.hp; spawnHit(en.targetX ?? en.x, en.targetY ?? en.y, h.damage); spawnDmgNum(en.targetX ?? en.x, en.targetY ?? en.y, h.damage); }
+            }
+          }
+          if (d.casterId === myId) addSysMsg(`☄ 陨石雨命中 ${(d.hits || []).length} 个目标`);
+          break;
+        }
 
         case 's_item_spawn': {
           const d = msg.data;
@@ -1306,11 +1487,352 @@
       return best;
     }
 
+    function pickTargetAtWorld(wx, wy, snapR, fromPx, fromPy, castRange) {
+      snapR = snapR || 48;
+      let best = null, bestD = snapR;
+      for (const p of Object.values(players)) {
+        if (p.isDead) continue;
+        const tx = p.x ?? p.targetX ?? 0, ty = p.y ?? p.targetY ?? 0;
+        if (fromPx != null && Math.hypot(tx - fromPx, ty - fromPy) > castRange) continue;
+        const d = Math.hypot(wx - tx, wy - ty);
+        if (d < bestD) { bestD = d; best = { kind: 'player', id: p.id, x: tx, y: ty }; }
+      }
+      for (const en of Object.values(enemies)) {
+        if (en.isDead) continue;
+        const ex = en.x ?? en.targetX ?? 0, ey = en.y ?? en.targetY ?? 0;
+        if (fromPx != null && Math.hypot(ex - fromPx, ey - fromPy) > castRange) continue;
+        const d = Math.hypot(wx - ex, wy - ey);
+        if (d < bestD) { bestD = d; best = { kind: 'enemy', id: en.id, x: ex, y: ey }; }
+      }
+      return best;
+    }
+
+    /** 治疗专用:优先 NPC/怪物,再其他玩家,最后才是自己(避免贴身时误选自身) */
+    function pickHealTargetAtWorld(wx, wy, snapR, fromPx, fromPy, castRange) {
+      snapR = snapR || 52;
+      let bestEnemy = null, bestEnemyD = snapR;
+      for (const en of Object.values(enemies)) {
+        if (en.isDead) continue;
+        const ex = en.x ?? en.targetX ?? 0, ey = en.y ?? en.targetY ?? 0;
+        if (fromPx != null && Math.hypot(ex - fromPx, ey - fromPy) > castRange) continue;
+        const d = Math.hypot(wx - ex, wy - ey);
+        if (d < bestEnemyD) { bestEnemyD = d; bestEnemy = { kind: 'enemy', id: en.id, x: ex, y: ey }; }
+      }
+      if (bestEnemy) return bestEnemy;
+
+      let bestPlayer = null, bestPlayerD = snapR;
+      for (const p of Object.values(players)) {
+        if (p.isDead) continue;
+        if (parseInt(p.id, 10) === myId) continue;
+        const tx = p.x ?? p.targetX ?? 0, ty = p.y ?? p.targetY ?? 0;
+        if (fromPx != null && Math.hypot(tx - fromPx, ty - fromPy) > castRange) continue;
+        const d = Math.hypot(wx - tx, wy - ty);
+        if (d < bestPlayerD) { bestPlayerD = d; bestPlayer = { kind: 'player', id: p.id, x: tx, y: ty }; }
+      }
+      if (bestPlayer) return bestPlayer;
+
+      const me = players[myId];
+      if (me && !me.isDead) {
+        const tx = me.x ?? me.targetX ?? 0, ty = me.y ?? me.targetY ?? 0;
+        if (fromPx != null && Math.hypot(tx - fromPx, ty - fromPy) > castRange) return null;
+        const d = Math.hypot(wx - tx, wy - ty);
+        if (d < snapR) return { kind: 'player', id: myId, x: tx, y: ty };
+      }
+      return null;
+    }
+
+    /** 射程内最近敌人(与服务端 SkillSystem 一致) */
+    function findNearestEnemyTarget(px, py, range) {
+      let best = null, bestD = range;
+      for (const en of Object.values(enemies)) {
+        if (en.isDead) continue;
+        const ex = en.x ?? en.targetX ?? 0, ey = en.y ?? en.targetY ?? 0;
+        const d = Math.hypot(ex - px, ey - py);
+        if (d <= bestD) { bestD = d; best = { kind: 'enemy', id: en.id, x: ex, y: ey }; }
+      }
+      return best;
+    }
+
+    /** 射程内最近玩家(PvP / 治疗) */
+    function findNearestPlayerTarget(px, py, range, excludeSelf) {
+      let best = null, bestD = range;
+      for (const p of Object.values(players)) {
+        if (p.isDead) continue;
+        if (excludeSelf && parseInt(p.id, 10) === myId) continue;
+        const tx = p.x ?? p.targetX ?? 0, ty = p.y ?? p.targetY ?? 0;
+        const d = Math.hypot(tx - px, ty - py);
+        if (d <= bestD) { bestD = d; best = { kind: 'player', id: p.id, x: tx, y: ty }; }
+      }
+      return best;
+    }
+
+    function focusTargetLabel(t) {
+      if (!t) return '无';
+      if (t.kind === 'player' && parseInt(t.id, 10) === myId) return '自己';
+      if (t.kind === 'player') return players[t.id]?.name || `玩家 #${t.id}`;
+      const en = enemies[t.id];
+      if (en?.displayName) return en.displayName;
+      if (en?.llmEnabled) return `NPC #${t.id}`;
+      return `怪物 #${t.id}`;
+    }
+
+    /** 治疗可选目标:NPC/怪物与其他玩家按距离,自己在最后 */
+    function listHealTargets(px, py, range) {
+      const list = [];
+      for (const en of Object.values(enemies)) {
+        if (en.isDead) continue;
+        const ex = en.x ?? en.targetX ?? 0, ey = en.y ?? en.targetY ?? 0;
+        const dist = Math.hypot(ex - px, ey - py);
+        if (dist > range) continue;
+        list.push({ kind: 'enemy', id: en.id, x: ex, y: ey, dist });
+      }
+      for (const p of Object.values(players)) {
+        if (p.isDead) continue;
+        if (parseInt(p.id, 10) === myId) continue;
+        const tx = p.x ?? p.targetX ?? 0, ty = p.y ?? p.targetY ?? 0;
+        const dist = Math.hypot(tx - px, ty - py);
+        if (dist > range) continue;
+        list.push({ kind: 'player', id: p.id, x: tx, y: ty, dist });
+      }
+      list.sort((a, b) => a.dist - b.dist);
+      const me = players[myId];
+      if (me && !me.isDead) list.push({ kind: 'player', id: myId, x: px, y: py, dist: 0 });
+      return list;
+    }
+
+    /** 火球可选目标:射程内敌人,按距离排序 */
+    function listFireballTargets(px, py, range) {
+      const list = [];
+      for (const en of Object.values(enemies)) {
+        if (en.isDead) continue;
+        const ex = en.x ?? en.targetX ?? 0, ey = en.y ?? en.targetY ?? 0;
+        const dist = Math.hypot(ex - px, ey - py);
+        if (dist > range) continue;
+        list.push({ kind: 'enemy', id: en.id, x: ex, y: ey, dist });
+      }
+      list.sort((a, b) => a.dist - b.dist);
+      return list;
+    }
+
+    function listTargetsForSkill(skillId, px, py, range) {
+      if (skillId === 'heal') return listHealTargets(px, py, range);
+      if (skillId === 'fireball') return listFireballTargets(px, py, range);
+      return [];
+    }
+
+    function isFocusValid(skillId, px, py, range) {
+      if (!focusTarget) return false;
+      if (skillId === 'fireball' && focusTarget.kind !== 'enemy') return false;
+      const pos = getEntityTargetPos(focusTarget.kind, focusTarget.id);
+      if (!pos) return false;
+      return Math.hypot(pos.x - px, pos.y - py) <= range;
+    }
+
+    /** 靠近时自动选中最近有效目标;已有选中且仍有效则保持 */
+    function ensureFocusTarget(skillId, px, py, range) {
+      const list = listTargetsForSkill(skillId, px, py, range);
+      if (!list.length) {
+        focusTarget = null;
+        return null;
+      }
+      if (isFocusValid(skillId, px, py, range)) {
+        const pos = getEntityTargetPos(focusTarget.kind, focusTarget.id);
+        return { kind: focusTarget.kind, id: focusTarget.id, x: pos.x, y: pos.y };
+      }
+      const t = list[0];
+      focusTarget = { kind: t.kind, id: t.id };
+      return t;
+    }
+
+    /** Tab 切换单目标选中(Shift+Tab 反向) */
+    function cycleFocusTarget(skillId, px, py, range, dir) {
+      const list = listTargetsForSkill(skillId, px, py, range);
+      if (!list.length) {
+        focusTarget = null;
+        addSysMsg('范围内没有可选目标');
+        updateSkillPreviewUI();
+        return null;
+      }
+      let idx = focusTarget
+        ? list.findIndex(t => t.kind === focusTarget.kind && t.id === focusTarget.id)
+        : -1;
+      idx = (idx + dir + list.length) % list.length;
+      focusTarget = { kind: list[idx].kind, id: list[idx].id };
+      addSysMsg(`◉ 目标: ${focusTargetLabel(list[idx])}`);
+      updateSkillPreviewUI();
+      return list[idx];
+    }
+
+    /**
+     * 解析单目标技能瞄准:靠近自动选中 + Tab 切换 focusTarget
+     * (火球=敌人;治疗=NPC/玩家,自己在列表末尾)
+     */
+    function resolveSingleTarget(skillId, px, py, sk) {
+      if (skillId === 'heal' || skillId === 'fireball') {
+        return ensureFocusTarget(skillId, px, py, sk.range);
+      }
+      return null;
+    }
+
+    function hasEnemyInRange(px, py, range) {
+      return !!findNearestEnemyTarget(px, py, range);
+    }
+
+    function getEntityTargetPos(kind, id) {
+      if (kind === 'enemy') {
+        const en = enemies[id];
+        if (!en || en.isDead) return null;
+        return { kind, id, x: en.targetX ?? en.x, y: en.targetY ?? en.y };
+      }
+      if (kind === 'player') {
+        const p = players[id];
+        if (!p || p.isDead) return null;
+        return { kind, id, x: p.targetX ?? p.x, y: p.targetY ?? p.y };
+      }
+      return null;
+    }
+
+    function aimAtEntity(px, py, sk, target, locked) {
+      const pt = clampCastPoint(px, py, target.x, target.y, sk.range);
+      return { x: pt.x, y: pt.y, inRange: pt.inRange, locked, target };
+    }
+
+    /** 范围技能落点:锁定目标跟随 / 否则吸附最近怪物 / 无目标时沿面朝方向 */
+    function resolveAreaAim(sk) {
+      const me = players[myId];
+      if (!me) return { x: 0, y: 0, inRange: false, locked: false, target: null };
+      const px = me.targetX ?? me.x, py = me.targetY ?? me.y;
+
+      if (skillLockTarget) {
+        const t = getEntityTargetPos(skillLockTarget.kind, skillLockTarget.id);
+        if (t) return aimAtEntity(px, py, sk, t, true);
+        skillLockTarget = null;
+        addSysMsg('锁定目标已丢失');
+      }
+
+      const nearest = findNearestEnemyTarget(px, py, sk.range);
+      if (nearest) {
+        skillAreaTarget = { kind: nearest.kind, id: nearest.id };
+        return aimAtEntity(px, py, sk, nearest, false);
+      }
+
+      skillAreaTarget = null;
+      const free = resolveSkillAim(sk);
+      return { x: free.x, y: free.y, inRange: free.inRange, locked: false, target: null };
+    }
+
+    function toggleSkillLock() {
+      if (skillLockTarget) {
+        skillLockTarget = null;
+        addSysMsg('○ 已解除目标锁定');
+        updateSkillPreviewUI();
+        return;
+      }
+      const me = players[myId];
+      if (!me) return;
+      const sk = SKILLS.meteor;
+      const px = me.targetX ?? me.x, py = me.targetY ?? me.y;
+
+      if (!hasEnemyInRange(px, py, sk.range)) {
+        addSysMsg('范围内没有怪物，无法锁定');
+        return;
+      }
+
+      setSkillPreview('meteor');
+      let candidate = skillAreaTarget && getEntityTargetPos(skillAreaTarget.kind, skillAreaTarget.id);
+      if (!candidate) {
+        const aim = resolveAreaAim(SKILLS.meteor);
+        candidate = aim.target;
+      }
+      if (!candidate) {
+        addSysMsg('范围内没有可锁定的怪物');
+        return;
+      }
+      skillLockTarget = { kind: candidate.kind, id: candidate.id };
+      skillAreaTarget = { ...skillLockTarget };
+      skillRangePinned = true;
+      setSkillPreview('meteor');
+      addSysMsg(`◉ 已锁定怪物 #${candidate.id}（落点将跟随移动）`);
+    }
+
+    function drawLockMarker(wx, wy, color) {
+      if (!isVisible(wx, wy, 40)) return;
+      const sx = wx - camera.x, sy = wy - camera.y;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.9;
+      const s = 5;
+      ctx.strokeRect(sx - s, sy - s - 10, s * 2, s * 2);
+      ctx.beginPath();
+      ctx.arc(sx, sy - 10, 3.5, Math.PI, 0);
+      ctx.stroke();
+      ctx.globalAlpha = 0.35;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 18, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function defaultAimPoint(sk) {
+      const me = players[myId];
+      if (!me) return { x: 0, y: 0 };
+      const px = me.targetX ?? me.x, py = me.targetY ?? me.y;
+      const f = me.facing || 0;
+      const dist = Math.min(sk.range * 0.45, 140);
+      return { x: px + Math.cos(f) * dist, y: py + Math.sin(f) * dist };
+    }
+
+    /** 无锁定目标时的默认落点(沿角色朝向,不跟随鼠标) */
+    function resolveSkillAim(sk) {
+      const me = players[myId];
+      if (!me) return { x: 0, y: 0, inRange: false };
+      const px = me.targetX ?? me.x, py = me.targetY ?? me.y;
+      const d = defaultAimPoint(sk);
+      return clampCastPoint(px, py, d.x, d.y, sk.range);
+    }
+
     canvas.addEventListener('click', (e) => {
       if (!connected || !myId || document.activeElement === chatInput) return;
       const rect = canvas.getBoundingClientRect();
       const wx = e.clientX - rect.left + camera.x;
       const wy = e.clientY - rect.top + camera.y;
+
+      if (e.altKey) {
+        const me = players[myId];
+        const px = me?.targetX ?? me?.x ?? 0, py = me?.targetY ?? me?.y ?? 0;
+        const t = pickHealTargetAtWorld(wx, wy, 52, px, py, SKILLS.heal.range);
+        if (t) {
+          focusTarget = { kind: t.kind, id: t.id };
+          castSkill('heal', { targetId: t.id, targetKind: t.kind });
+        }
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) {
+        const me = players[myId];
+        const px = me?.targetX ?? me?.x ?? 0, py = me?.targetY ?? me?.y ?? 0;
+        const t = pickTargetAtWorld(wx, wy, 48, px, py, SKILLS.fireball.range);
+        if (t) castSkill('fireball', { targetId: t.id, targetKind: t.kind });
+        return;
+      }
+
+      // 治疗预览中:对当前选中目标施法(优先于寻路)
+      if (skillPreview === 'heal' && !e.shiftKey) {
+        const me = players[myId];
+        if (!me) return;
+        const px = me.targetX ?? me.x, py = me.targetY ?? me.y;
+        const t = resolveSingleTarget('heal', px, py, SKILLS.heal);
+        if (t) castSkill('heal', { targetId: t.id, targetKind: t.kind });
+        return;
+      }
+
+      // 范围技能预览中:点击画布确认落点(跟随锁定/吸附目标)
+      if (skillPreview === 'meteor' && !e.shiftKey) {
+        castSkill('meteor', meteorCastPoint());
+        return;
+      }
+
       const npc = pickNpcAtWorld(wx, wy);
       if (!npc) return;
       if (e.shiftKey) {
@@ -1537,7 +2059,7 @@
       // T 循环切换天气;[ / ] 调强度;Y 取消覆盖,交回服务端权威
       const k = e.key.toLowerCase();
       if (k === 't') { cycleWeatherDebug(); return; }
-      if (k === 'y') {
+      if (k === '0') {
         weatherOverride = null;
         addSysMsg('天气已交回服务端权威');
         return;
@@ -1554,8 +2076,341 @@
       if (e.key === ' ') {
         e.preventDefault();
         doAttack();
+        return;
+      }
+
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        if (skillPreview === 'meteor') return;
+        const me = players[myId];
+        if (!me) return;
+        const px = me.targetX ?? me.x, py = me.targetY ?? me.y;
+        const skId = skillPreview === 'heal' || skillPreview === 'fireball' ? skillPreview : 'heal';
+        const sk = SKILLS[skId];
+        cycleFocusTarget(skId, px, py, sk.range, e.shiftKey ? -1 : 1);
+        setSkillPreview(skId);
+        skillRangePinned = true;
+        return;
+      }
+
+      // ── 技能快捷键 J / K / L ───────────────────────────────────
+      if (k === 'j') { setSkillPreview('heal'); castSkillAtTarget('heal'); return; }
+      if (k === 'k') { setSkillPreview('fireball'); castSkillAtTarget('fireball'); return; }
+      if (k === 'l') { setSkillPreview('meteor'); castSkill('meteor', meteorCastPoint()); return; }
+      if (k === 'i') { toggleSkillLock(); return; }
+      if (k === 'o') {
+        const order = ['heal', 'fireball', 'meteor'];
+        const idx = skillPreview ? order.indexOf(skillPreview) : -1;
+        setSkillPreview(order[(idx + 1) % order.length]);
+        skillRangePinned = true;
+        return;
       }
     });
+
+    document.addEventListener('keyup', e => {
+      keys[e.key.toLowerCase()] = false;
+    });
+
+    function setSkillPreview(skillId) {
+      skillPreview = skillId;
+      if (skillId !== 'meteor' && !skillLockTarget) skillAreaTarget = null;
+      if ((skillId === 'heal' || skillId === 'fireball') && myId && players[myId]) {
+        const me = players[myId];
+        const px = me.targetX ?? me.x, py = me.targetY ?? me.y;
+        ensureFocusTarget(skillId, px, py, SKILLS[skillId].range);
+      }
+      updateSkillPreviewUI();
+      if (skillPreviewTimer) clearTimeout(skillPreviewTimer);
+      if (!skillRangePinned && skillId) {
+        skillPreviewTimer = setTimeout(() => {
+          if (!skillRangePinned) { skillPreview = null; updateSkillPreviewUI(); }
+        }, 1500);
+      }
+    }
+
+    function updateSkillPreviewUI() {
+      document.querySelectorAll('#skill-bar .skill-btn').forEach(btn => {
+        const active = skillPreview === btn.dataset.skill;
+        btn.classList.toggle('preview-active', active);
+        const id = btn.dataset.skill;
+        const hasFocus = !!focusTarget && (id === 'heal' || id === 'fireball');
+        btn.classList.toggle('target-locked', active && (id === 'meteor' ? !!skillLockTarget : hasFocus));
+      });
+    }
+
+    function meteorCastPoint() {
+      const pt = resolveAreaAim(SKILLS.meteor);
+      return { x: Math.round(pt.x), y: Math.round(pt.y) };
+    }
+
+    function clampCastPoint(px, py, mx, my, range) {
+      const dx = mx - px, dy = my - py;
+      const d = Math.hypot(dx, dy);
+      if (d <= range) return { x: mx, y: my, inRange: true };
+      if (d < 1) return { x: px + range, y: py, inRange: false };
+      return { x: px + dx / d * range, y: py + dy / d * range, inRange: false };
+    }
+
+    function castSkillAtTarget(skillId) {
+      const sk = SKILLS[skillId];
+      if (!sk) return;
+      const me = players[myId];
+      if (!me) return;
+      const px = me.targetX ?? me.x, py = me.targetY ?? me.y;
+      const t = resolveSingleTarget(skillId, px, py, sk);
+      if (!t) {
+        if (skillId === 'fireball') addSysMsg('范围内没有可攻击目标');
+        return;
+      }
+      castSkill(skillId, { targetId: t.id, targetKind: t.kind });
+    }
+
+    function castSkill(skillId, extra) {
+      if (!ws || !connected || !myId) return;
+      const sk = SKILLS[skillId];
+      if (!sk) return;
+      const now = Date.now();
+      if (now - (skillCastAt[skillId] || 0) < sk.cooldown) return;
+      ws.send(JSON.stringify({ type: 'c_cast', data: { skillId, ...(extra || {}) } }));
+      setSkillPreview(skillId);
+    }
+
+    document.querySelectorAll('#skill-bar .skill-btn').forEach(btn => {
+      btn.addEventListener('mouseenter', () => { if (!skillRangePinned) setSkillPreview(btn.dataset.skill); });
+      btn.addEventListener('mouseleave', () => { if (!skillRangePinned) { skillPreview = null; updateSkillPreviewUI(); } });
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.skill;
+        setSkillPreview(id);
+        if (id === 'meteor') castSkill(id, meteorCastPoint());
+        else castSkillAtTarget(id);
+      });
+    });
+
+    function updateSkillBarCd() {
+      const now = Date.now();
+      document.querySelectorAll('#skill-bar .skill-btn').forEach(btn => {
+        const id = btn.dataset.skill;
+        const sk = SKILLS[id];
+        if (!sk) return;
+        let overlay = btn.querySelector('.cd-overlay');
+        if (!overlay) { overlay = document.createElement('div'); overlay.className = 'cd-overlay'; btn.appendChild(overlay); }
+        const prog = Math.min(1, (now - (skillCastAt[id] || 0)) / sk.cooldown);
+        overlay.style.height = prog >= 1 ? '0%' : `${(1 - prog) * 100}%`;
+        btn.style.opacity = prog >= 1 ? '1' : '0.62';
+      });
+    }
+
+    /** 绘制技能瞄准预览(单目标=指向线;范围=实际命中区域) */
+    function drawSkillRangePreview() {
+      if (!connected || !myId || !skillPreview) return;
+      const me = players[myId];
+      const sk = SKILLS[skillPreview];
+      if (!me || !sk || me.isDead) return;
+
+      const px = me.targetX ?? me.x, py = me.targetY ?? me.y;
+      const col = sk.color || '#fff';
+
+      if (sk.aim === 'area') {
+        drawSkillAreaAim(px, py, sk, col);
+      } else {
+        drawSkillSingleAim(px, py, sk, col);
+      }
+    }
+
+    /** 单目标:有目标时显示锁定准星;无怪物时仅显示淡方向线(不支持锁定) */
+    function drawSkillSingleAim(px, py, sk, col) {
+      const target = resolveSingleTarget(skillPreview, px, py, sk);
+
+      if (target) {
+        const dist = Math.hypot(target.x - px, target.y - py);
+        const ok = dist <= sk.range;
+        const lineCol = ok ? col : '#ff4466';
+        if (dist > 14) {
+          drawAimArrow(px, py, target.x, target.y, lineCol, ok ? 0.85 : 0.45);
+          drawTargetReticle(target.x, target.y, sk.hitR || 18, lineCol);
+          drawLockMarker(target.x, target.y, '#ffe066');
+        }
+      }
+    }
+
+    /** 范围技能:落点跟随锁定/吸附目标,绘制实际 AOE 区域 */
+    function drawSkillAreaAim(px, py, sk, col) {
+      const aim = resolveAreaAim(sk);
+      const aoeCol = aim.locked ? '#ffe066' : (aim.inRange ? col : '#ff4466');
+      if (!aim.inRange) drawAimArrow(px, py, aim.x, aim.y, '#ff4466', 0.35);
+      drawSkillImpactFootprint(aim.x, aim.y, sk.radius || 130, sk.shape || 'burst', aoeCol, aim.inRange);
+      drawTargetReticle(aim.x, aim.y, 6, aoeCol);
+      if (aim.target) drawLockMarker(aim.target.x, aim.target.y, aim.locked ? '#ffe066' : aoeCol);
+    }
+
+    /** 不规则范围 footprint(按技能 shape 区分) */
+    function drawSkillImpactFootprint(wx, wy, r, shape, color, ok) {
+      if (!isVisible(wx, wy, r + 30)) return;
+      const sx = wx - camera.x, sy = wy - camera.y;
+      const alpha = ok ? 0.38 : 0.28;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = 1.5;
+
+      if (shape === 'burst') {
+        // 陨石:主落点 + 若干小冲击坑(总范围 ≈ r)
+        const blobs = [
+          { ox: 0, oy: 0, rr: r * 0.28 },
+          { ox: -r * 0.38, oy: r * 0.08, rr: r * 0.18 },
+          { ox: r * 0.35, oy: -r * 0.06, rr: r * 0.16 },
+          { ox: r * 0.12, oy: r * 0.32, rr: r * 0.14 },
+          { ox: -r * 0.15, oy: -r * 0.28, rr: r * 0.12 },
+        ];
+        for (const b of blobs) {
+          ctx.globalAlpha = alpha * 0.35;
+          ctx.beginPath();
+          ctx.ellipse(sx + b.ox, sy + b.oy, b.rr, b.rr * 0.55, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = alpha;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        const n = 8;
+        for (let i = 0; i <= n; i++) {
+          const ang = (i / n) * Math.PI * 2 - Math.PI / 2;
+          const wobble = 0.82 + (i % 2) * 0.14;
+          const rx = Math.cos(ang) * r * wobble;
+          const ry = Math.sin(ang) * r * 0.52 * wobble;
+          if (i === 0) ctx.moveTo(sx + rx, sy + ry);
+          else ctx.lineTo(sx + rx, sy + ry);
+        }
+        ctx.closePath();
+        ctx.stroke();
+      } else {
+        ctx.globalAlpha = alpha * 0.3;
+        ctx.beginPath();
+        ctx.ellipse(sx, sy, r * 0.35, r * 0.2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = alpha;
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
+    function drawAimArrow(x0, y0, x1, y1, color, alpha) {
+      const sx0 = x0 - camera.x, sy0 = y0 - camera.y;
+      const sx1 = x1 - camera.x, sy1 = y1 - camera.y;
+      const ang = Math.atan2(y1 - y0, x1 - x0);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(sx0, sy0);
+      ctx.lineTo(sx1, sy1);
+      ctx.stroke();
+      // 箭头
+      const ah = 7;
+      ctx.beginPath();
+      ctx.moveTo(sx1, sy1);
+      ctx.lineTo(sx1 - Math.cos(ang - 0.45) * ah, sy1 - Math.sin(ang - 0.45) * ah);
+      ctx.lineTo(sx1 - Math.cos(ang + 0.45) * ah, sy1 - Math.sin(ang + 0.45) * ah);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawTargetReticle(wx, wy, r, color) {
+      if (!isVisible(wx, wy, r + 16)) return;
+      const sx = wx - camera.x, sy = wy - camera.y;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(sx - r - 3, sy); ctx.lineTo(sx - r + 5, sy);
+      ctx.moveTo(sx + r - 5, sy); ctx.lineTo(sx + r + 3, sy);
+      ctx.moveTo(sx, sy - r * 0.55 - 2); ctx.lineTo(sx, sy - r * 0.55 + 4);
+      ctx.moveTo(sx, sy + r * 0.55 - 4); ctx.lineTo(sx, sy + r * 0.55 + 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawWorldLine(x0, y0, x1, y1, color, alpha) {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x0 - camera.x, y0 - camera.y);
+      ctx.lineTo(x1 - camera.x, y1 - camera.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
+    function drawWorldCrosshair(wx, wy, color, ok) {
+      drawTargetReticle(wx, wy, 5, ok ? color : '#ff4466');
+    }
+
+    // 技能栏 UI 图标(64×64 PNG,见 assets/skills/icons/README 来源说明)
+    const SKILL_ICONS = {
+      heal: 'assets/skills/icons/icon-heal.png',
+      fireball: 'assets/skills/icons/icon-fireball.png',
+      meteor: 'assets/skills/icons/icon-meteor.png',
+    };
+
+    function initSkillBarIcons() {
+      document.querySelectorAll('#skill-bar .skill-btn').forEach(btn => {
+        const id = btn.dataset.skill;
+        const img = btn.querySelector('.skill-icon');
+        const fb = btn.querySelector('.skill-icon-fallback');
+        if (!id) return;
+        if (img && SKILL_ICONS[id]) {
+          img.src = SKILL_ICONS[id];
+          img.onerror = () => {
+            btn.classList.add('icon-fallback');
+            if (fb) drawSkillIconFallback(fb, id);
+          };
+        } else if (fb) {
+          btn.classList.add('icon-fallback');
+          drawSkillIconFallback(fb, id);
+        }
+      });
+    }
+
+    function drawSkillIconFallback(canvas, skillId) {
+      const c = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      c.clearRect(0, 0, w, h);
+      // 程序化兜底(仅图标 PNG 加载失败时使用)
+      const cx = w / 2, cy = h / 2;
+      c.save();
+      if (skillId === 'heal') {
+        const g = c.createRadialGradient(cx, cy, 0, cx, cy, 14);
+        g.addColorStop(0, '#aaffcc'); g.addColorStop(1, '#33ff88');
+        c.fillStyle = g;
+        c.beginPath(); c.arc(cx, cy, 13, 0, Math.PI * 2); c.fill();
+        c.fillStyle = '#fff';
+        c.fillRect(cx - 2, cy - 8, 4, 16);
+        c.fillRect(cx - 8, cy - 2, 16, 4);
+      } else if (skillId === 'fireball') {
+        const g = c.createRadialGradient(cx, cy, 0, cx, cy, 14);
+        g.addColorStop(0, '#fff'); g.addColorStop(0.35, '#ffaa44'); g.addColorStop(1, '#ff4400');
+        c.fillStyle = g;
+        c.beginPath(); c.arc(cx, cy, 13, 0, Math.PI * 2); c.fill();
+      } else if (skillId === 'meteor') {
+        c.fillStyle = '#bb88ff';
+        c.beginPath(); c.moveTo(cx, cy - 12); c.lineTo(cx + 10, cy + 8); c.lineTo(cx - 10, cy + 8); c.closePath(); c.fill();
+        c.fillStyle = '#ff8844';
+        c.beginPath(); c.arc(cx, cy + 10, 5, 0, Math.PI * 2); c.fill();
+      }
+      c.restore();
+    }
 
     // 发起攻击(键盘 SPACE 与触屏攻击键共用);权威冷却在服务端,这里只更新 HUD 冷却环估算
     function doAttack() {
@@ -1576,10 +2431,6 @@
       weatherOverride = { ...weather };
       addSysMsg(`[调试] 强制天气: ${weatherLabel(next)}${next === 'clear' ? '' : ` (强度 ${it.toFixed(1)})`}`);
     }
-
-    document.addEventListener('keyup', e => {
-      keys[e.key.toLowerCase()] = false;
-    });
 
     function sendInput() {
       if (!ws || !connected || !myId) return;
@@ -1785,6 +2636,7 @@
       }
       updateProjectiles();
       updateShockwaves();
+      updateSkillAnims();
     }
 
     // ─── Color helpers ────────────────────────────────────────
@@ -2216,6 +3068,12 @@
       katana: 'sword', battleaxe: 'axe', warhammer: 'hammer',
       runestaff: 'staff', dragonblade: 'greatsword',
     };
+    // 英雄默认技能(与服务端 src/core/Skills.ts 一致,仅用于 HUD/冷却/特效)
+    const SKILLS = {
+      heal:     { label: '治疗',   cooldown: 5000, range: 280, color: '#33ff88', aim: 'single', hitR: 18 },
+      fireball: { label: '火球术', cooldown: 2500, range: 320, color: '#ff8844', aim: 'single', hitR: 12 },
+      meteor:   { label: '陨石雨', cooldown: 8000, range: 360, radius: 130, color: '#bb88ff', aim: 'area', shape: 'burst' },
+    };
 
     // ── 武器贴图(Kenney Tiny Dungeon · CC0)+ 程序化兜底 ──────────────
     const WEAPON_SPRITE_PATHS = {
@@ -2300,6 +3158,133 @@
       p.attackAnim = { weapon: data.weapon, dir: data.dir || 0, t: 0, dur: w.dur,
                        reach: Math.max(40, data.range || w.range || 80), impacted: false, fired: false };
       p.facing = data.dir ?? p.facing ?? 0;
+    }
+
+    // ── 英雄技能特效(开源序列帧 · 见 assets/skills/README.md) ─────────────
+    const SKILL_FX = {
+      heal:     { src: 'assets/skills/heal.png',     fw: 64, fh: 64,  frames: 6,  scale: 1.35, step: 2, dur: 36 },
+      fireball: { src: 'assets/skills/fireball.png', fw: 64, fh: 64,  frames: 14, scale: 1.5,  step: 2, dur: 42 },
+      meteor:   { src: 'assets/skills/meteor.png',   fw: 64, fh: 128, frames: 10, scale: 2.2,  step: 2, dur: 50 },
+      spark:    { src: 'assets/skills/spark.png',    fw: 32, fh: 32,  frames: 7,  scale: 1.6,  step: 2, dur: 28 },
+      flame:    { src: 'assets/skills/flame.png',    fw: 512, fh: 512, frames: 1, scale: 1, step: 1, dur: 1 },
+    };
+    const _skillFxCache = {};
+    function loadSkillFx(key) {
+      const def = SKILL_FX[key];
+      if (!def) return null;
+      if (key in _skillFxCache) return _skillFxCache[key];
+      const img = new Image();
+      img.onerror = () => { _skillFxCache[key] = null; };
+      img.src = def.src;
+      _skillFxCache[key] = img;
+      return img;
+    }
+    function drawSkillSheet(key, frame, sx, sy, scale, alpha) {
+      const def = SKILL_FX[key];
+      const img = loadSkillFx(key);
+      const ready = (i) => !!i && i.complete && i.naturalWidth > 0;
+      if (!def || !ready(img)) return false;
+      const f = frame % def.frames;
+      const dw = def.fw * scale, dh = def.fh * scale;
+      ctx.save();
+      ctx.globalAlpha = alpha ?? 1;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(img, f * def.fw, 0, def.fw, def.fh, sx - dw / 2, sy - dh / 2, dw, dh);
+      ctx.restore();
+      return true;
+    }
+
+    // ── 收到 s_skill_cast:播放技能特效 ───────────────────────────────────
+    function triggerSkillAnim(data) {
+      const caster = players[data.casterId];
+      if (data.casterId === myId && data.skillId) skillCastAt[data.skillId] = Date.now();
+      if (data.skillId === 'heal') {
+        skillAnims.push({ kind: 'sheet', sheet: 'heal', x: data.x, y: data.y, t: 0, dur: SKILL_FX.heal.dur, fade: true });
+        skillAnims.push({ kind: 'sheet', sheet: 'spark', x: data.x, y: data.y - 10, t: 0, dur: SKILL_FX.spark.dur, fade: true });
+      } else if (data.skillId === 'fireball' && caster) {
+        const cx = caster.targetX ?? caster.x, cy = caster.targetY ?? caster.y;
+        spawnSkillProjectile(cx, cy, data.x, data.y);
+        skillAnims.push({ kind: 'sheet', sheet: 'fireball', x: data.x, y: data.y, t: 0, dur: SKILL_FX.fireball.dur, fade: true });
+      } else if (data.skillId === 'meteor') {
+        skillAnims.push({ kind: 'meteor_warn', x: data.x, y: data.y, radius: data.radius || 130, t: 0, dur: 28 });
+      }
+    }
+
+    function spawnSkillProjectile(sx, sy, tx, ty) {
+      const dist = Math.hypot(tx - sx, ty - sy);
+      if (dist < 8) return;
+      const dir = Math.atan2(ty - sy, tx - sx);
+      const spd = 16;
+      projectiles.push({
+        x: sx, y: sy, vx: Math.cos(dir) * spd, vy: Math.sin(dir) * spd, dir,
+        kind: 'fireball', dist: 0, max: dist, color: '#ff8844', tx, ty,
+      });
+    }
+
+    function updateSkillAnims() {
+      for (let i = skillAnims.length - 1; i >= 0; i--) {
+        skillAnims[i].t++;
+        if (skillAnims[i].t >= skillAnims[i].dur) skillAnims.splice(i, 1);
+      }
+    }
+
+    function drawMeteorWarn(a) {
+      const sx = a.x - camera.x, sy = a.y - camera.y;
+      const prog = a.t / a.dur;
+      const pulse = 0.35 + 0.25 * Math.sin(a.t * 0.4);
+      ctx.save();
+      ctx.strokeStyle = `rgba(255,100,40,${pulse})`;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.arc(sx, sy, a.radius * (0.85 + prog * 0.15), 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+      // 预警中心：Kenney 光点或程序化十字
+      if (!drawSkillSheet('flame', 0, sx, sy, 0.045, pulse * 0.8)) {
+        ctx.fillStyle = `rgba(255,120,40,${pulse})`;
+        ctx.beginPath(); ctx.arc(sx, sy, 6, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawSkillAnimFallback(a) {
+      const sx = a.x - camera.x, sy = a.y - camera.y;
+      const prog = a.t / a.dur;
+      if (a.kind === 'heal' || a.sheet === 'heal') {
+        const r = 10 + prog * 22;
+        ctx.save();
+        ctx.strokeStyle = `rgba(51,255,136,${(1 - prog) * 0.85})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+      } else if (a.kind === 'fireball' || a.sheet === 'fireball') {
+        ctx.save();
+        ctx.fillStyle = `rgba(255,120,40,${(1 - prog) * 0.7})`;
+        ctx.beginPath(); ctx.arc(sx, sy, 6 + prog * 14, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      } else if (a.kind === 'meteor' || a.sheet === 'meteor') {
+        const fall = Math.min(1, prog * 1.4);
+        const my = sy - 120 * (1 - fall);
+        ctx.save();
+        ctx.fillStyle = `rgba(255,80,20,${0.9 * fall})`;
+        ctx.beginPath(); ctx.arc(sx, my, 8 + fall * 14, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    function drawSkillAnims() {
+      for (const a of skillAnims) {
+        if (!isVisible(a.x, a.y, (a.radius || 140) + 80)) continue;
+        if (a.kind === 'meteor_warn') { drawMeteorWarn(a); continue; }
+        if (a.kind === 'sheet') {
+          const def = SKILL_FX[a.sheet];
+          const sx = a.x - camera.x, sy = a.y - camera.y;
+          const frame = def ? Math.floor(a.t / (def.step || 2)) : a.t;
+          const alpha = a.fade ? Math.max(0, 1 - a.t / a.dur) : 1;
+          if (!drawSkillSheet(a.sheet, frame, sx, sy, def?.scale || 1, alpha)) drawSkillAnimFallback(a);
+          continue;
+        }
+        drawSkillAnimFallback(a);
+      }
     }
 
     // ── 武器攻击动画:按武器类型分支,进度 t(0→1,帧驱动) ───────────────────
@@ -2484,7 +3469,10 @@
         const p = projectiles[i];
         p.x += p.vx; p.y += p.vy; p.dist += Math.hypot(p.vx, p.vy);
         if (p.dist >= p.max) {
-          if (p.kind === 'orb') {
+          if (p.kind === 'fireball') {
+            spawnRing(p.x, p.y, '#ff8844', 16);
+            spawnParticles(p.x, p.y, 14, { spdMin: 1.5, spdMax: 4.5, szMin: 2, szMax: 5, color: ['#ff6622', '#ffaa44', '#fff'], decay: 0.05 });
+          } else if (p.kind === 'orb') {
             spawnRing(p.x, p.y, p.color, 12);
             spawnParticles(p.x, p.y, 10, { spdMin: 1, spdMax: 3.5, szMin: 2, szMax: 4, color: [p.color, '#e0c8ff', '#fff'], decay: 0.05 });
           } else spawnParticles(p.x, p.y, 6, { spdMin: 1, spdMax: 3, szMin: 1, szMax: 3, color: [p.color, '#fff'], decay: 0.06 });
@@ -2500,6 +3488,17 @@
           const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, 9);
           g.addColorStop(0, '#fff'); g.addColorStop(0.4, p.color); g.addColorStop(1, 'transparent');
           ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, 9, 0, Math.PI * 2); ctx.fill();
+        } else if (p.kind === 'fireball') {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255,120,40,0.35)'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+          ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx - p.vx * 2.2, sy - p.vy * 2.2); ctx.stroke();
+          ctx.restore();
+          const sz = 16;
+          if (!drawSkillSheet('flame', 0, sx, sy, sz / 256, 0.95)) {
+            const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, 10);
+            g.addColorStop(0, '#fff'); g.addColorStop(0.35, '#ff8844'); g.addColorStop(1, 'transparent');
+            ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, 10, 0, Math.PI * 2); ctx.fill();
+          }
         } else {
           ctx.save(); ctx.translate(sx, sy); ctx.rotate(p.dir);
           ctx.strokeStyle = p.color; ctx.lineWidth = 2;
@@ -2877,6 +3876,7 @@
       drawDrops();
       drawHealthPacks();
       drawShockwaves();
+      drawSkillRangePreview();
 
       // ── Enemies + Players sorted together by Y ──────────────────
       // 合并排序让敌人与玩家按 Y 轴正确叠层
@@ -2897,6 +3897,7 @@
 
       // 飞行物(法球/箭)—— 飞在玩家之上
       drawProjectiles();
+      drawSkillAnims();
 
       // 树(树干挡人,树冠盖在玩家头顶)
       for (const o of trees) drawTree(o);
@@ -2959,6 +3960,7 @@
       statsEl.innerHTML = `PING: ${latency}ms  ·  <span style="color:#ffd23f">LV.${myLv}</span>${titleHtml}  ·  PLAYERS: ${Object.keys(players).length}  ·  ENEMIES: ${aliveEnemies}  ·  ${weatherLabel(weather.kind)}  ·  ${timeLabel(dayPhase)}  ·  <span style="color:${wCol}">⚔ ${myW.label}</span>`;
 
       drawMinimap();
+      updateSkillBarCd();
     }
 
     // ═══ Weather ══════════════════════════════════════════════════

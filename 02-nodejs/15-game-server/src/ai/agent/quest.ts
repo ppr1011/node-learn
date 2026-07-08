@@ -77,47 +77,76 @@ export class NpcQuests {
   ): void {
     for (const enemy of world.enemies.values()) {
       if (!enemy.llmEnabled || enemy.isDead) continue;
-      const q = this.activeFor(enemy, player.name);
-      if (!q || q.mobKind !== mobKind) continue;
+      this.advanceQuest(world, enemy, player, mobKind, mobX, mobY, now);
+    }
+  }
 
-      const d = Math.hypot(enemy.position.x - mobX, enemy.position.y - mobY);
-      if (d > enemy.detectionRange * 2.5) continue;
+  static onNpcKillMob(
+    world: GameWorld,
+    player: Player,
+    npc: Enemy,
+    mobKind: EnemyKind,
+    mobX: number,
+    mobY: number,
+    now: number
+  ): void {
+    if (!npc.llmEnabled || npc.isDead || npc.huntForPlayerId !== player.id) return;
+    this.advanceQuest(world, npc, player, mobKind, mobX, mobY, now);
+  }
 
-      q.progress++;
-      this.notifyQuest(player, enemy, q);
+  private static advanceQuest(
+    world: GameWorld,
+    enemy: Enemy,
+    player: Player,
+    mobKind: EnemyKind,
+    mobX: number,
+    mobY: number,
+    now: number
+  ): void {
+    const q = this.activeFor(enemy, player.name);
+    if (!q || q.mobKind !== mobKind) return;
 
-      if (q.progress < q.target) continue;
+    const d = Math.hypot(enemy.position.x - mobX, enemy.position.y - mobY);
+    if (d > enemy.detectionRange * 2.5) return;
 
-      q.status = 'done';
-      const mult = questXpMultiplier(enemy, player.name);
-      const reward = Math.round(q.rewardXp * mult);
-      const levels = player.gainXp(reward);
-      onQuestComplete(enemy, player.name, now);
-      NpcMood.onQuestComplete(enemy);
-      NpcMemory.add(enemy, 'world', `${player.name}完成了委托`, now, player.name);
-      RumorBoard.add(world, enemy.zoneId, `${player.name}完成了${enemy.displayName}的委托`, now);
+    q.progress++;
+    this.notifyQuest(player, enemy, q);
 
-      player.session.send(MsgType.XP_GAIN, {
+    if (q.progress < q.target) return;
+
+    q.status = 'done';
+    const mult = questXpMultiplier(enemy, player.name);
+    const reward = Math.round(q.rewardXp * mult);
+    const levels = player.gainXp(reward);
+    onQuestComplete(enemy, player.name, now);
+    NpcMood.onQuestComplete(enemy);
+    NpcMemory.add(enemy, 'world', `${player.name}完成了委托`, now, player.name);
+    RumorBoard.add(world, enemy.zoneId, `${player.name}完成了${enemy.displayName}的委托`, now);
+
+    player.session.send(MsgType.XP_GAIN, {
+      id: player.id,
+      gained: reward,
+      xp: player.xp,
+      xpToNext: player.xpToNext,
+      level: player.level,
+      source: 'quest',
+    });
+    if (levels > 0) {
+      player.session.send(MsgType.LEVEL_UP, {
         id: player.id,
-        gained: reward,
+        level: player.level,
+        hp: player.hp,
+        maxHp: player.maxHp,
         xp: player.xp,
         xpToNext: player.xpToNext,
-        level: player.level,
-        source: 'quest',
       });
-      if (levels > 0) {
-        player.session.send(MsgType.LEVEL_UP, {
-          id: player.id,
-          level: player.level,
-          hp: player.hp,
-          maxHp: player.maxHp,
-          xp: player.xp,
-          xpToNext: player.xpToNext,
-        });
-      }
+    }
 
-      this.speak(world, enemy, `干得漂亮！${reward}经验已给你。`);
-      delete enemy.llmQuests[player.name];
+    this.speak(world, enemy, `干得漂亮！${reward}经验已给你。`);
+    delete enemy.llmQuests[player.name];
+    if (enemy.huntForPlayerId === player.id) {
+      enemy.huntMobKind = null;
+      enemy.huntForPlayerId = null;
     }
   }
 

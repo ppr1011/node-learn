@@ -21,7 +21,12 @@ import { squadSnapshot } from '../agent/squad';
 
 const FOLLOW_CHAT = /跟着我|跟随|follow|一起走|跟我走|跟上/;
 const UNFOLLOW_CHAT = /别跟|不用跟|留下|自己巡逻|在这等|不用管我/;
+const HUNT_CHAT = /你去打|帮我去打|帮我打|去清理|去打怪|帮忙打|清怪|狩猎|击杀|打几只/;
+const STOP_HUNT_CHAT = /别打了|不用打了|停下打|停止狩猎/;
 const SPEED_UP_CHAT = /走快点|快点|speed up|赶紧/;
+
+/** 模型常把台词误写在 reason;这些 pattern 判定为内部备注,不宜直接展示给玩家 */
+const INTERNAL_REASON = /^(无威胁|无目标|维持|保持巡逻|附近|发现怪物|残血|LLM|Mock|玩家邀请|玩家解除|游荡|战术|清怪)/;
 
 export class LLMBrain {
   private readonly pending = new Set<number>();
@@ -74,12 +79,14 @@ export class LLMBrain {
       }
     }
     const following = enemy.followPlayerId !== null;
-    const engaged = near.length > 0 || following;
+    const hunting = enemy.huntMobKind !== null;
+    const engaged = near.length > 0 || following || hunting;
     const sig = [
       near.sort().join(','),
       Math.round((enemy.hp / enemy.maxHp) * 4), // 血量四分桶
       Math.round(enemy.mood / 25),              // 心情分桶
       following ? 'F' : '',
+      hunting ? 'H' : '',
       enemy.squadRole ?? '',
       mobNear ? 'M' : '',
       world.dayPhase,
@@ -106,6 +113,16 @@ export class LLMBrain {
       } else if (UNFOLLOW_CHAT.test(text)) {
         enemy.followPlayerId = null;
         enemy.llmDirective = { intent: 'patrol', decidedAt: now, reason: '玩家解除跟随' };
+      } else if (STOP_HUNT_CHAT.test(text)) {
+        enemy.huntMobKind = null;
+        enemy.huntForPlayerId = null;
+        enemy.llmDirective = { intent: 'patrol', decidedAt: now, reason: '玩家取消狩猎' };
+      } else if (HUNT_CHAT.test(text)) {
+        const quest = NpcQuests.activeFor(enemy, player.name);
+        enemy.followPlayerId = null;
+        enemy.huntForPlayerId = player.id;
+        enemy.huntMobKind = quest?.mobKind ?? null;
+        enemy.llmDirective = { intent: 'hunt', decidedAt: now, reason: '玩家委托狩猎' };
       }
       if (SPEED_UP_CHAT.test(text) && enemy.followPlayerId === player.id) {
         enemy.followBoostTimer = 6;
@@ -126,6 +143,9 @@ export class LLMBrain {
       .decide(snapshot)
       .then((directive) => {
         this.applyFollowState(world, enemy, directive, snapshot, now);
+        if (snapshot.chatText) {
+          this.ensureChatSpeech(snapshot, directive);
+        }
         enemy.llmDirective = directive;
         if (directive.intent === 'taunt') {
           enemy.llmPoseTimer = 0;
@@ -163,6 +183,48 @@ export class LLMBrain {
     logger.info(`[NPC对话] ${who} [${via}] → ${directive.intent}${heard}${said}${reason}`);
   }
 
+  /**
+   * 玩家聊天触发决策时,保证有可广播的 speech。
+   * 小模型(qwen3.5:4b 等)常把台词写在 reason,导致客户端收不到 CHAT_MSG。
+   */
+  private ensureChatSpeech(snapshot: LLMGameSnapshot, directive: LLMDirective): void {
+    if (directive.speech?.trim()) return;
+
+    const reason = directive.reason?.trim();
+    if (reason && this.isPlayerFacingReason(reason)) {
+      directive.speech = reason.slice(0, 100);
+      return;
+    }
+
+    const who = snapshot.chatFrom ?? '旅人';
+    switch (directive.intent) {
+      case 'follow':
+        directive.speech = `好的,${who},我跟你走。`;
+        break;
+      case 'attack':
+        directive.speech = '想动手?奉陪!';
+        break;
+      case 'flee':
+        directive.speech = '……我得先撤了!';
+        break;
+      case 'hunt':
+        directive.speech = '发现怪物,我来清理!';
+        break;
+      case 'taunt':
+        directive.speech = `……${who},听你吩咐。`;
+        break;
+      default:
+        directive.speech = `嗯?${who},有什么事吗?`;
+    }
+  }
+
+  private isPlayerFacingReason(reason: string): boolean {
+    if (INTERNAL_REASON.test(reason)) return false;
+    if (/[，。！？…,!?]/.test(reason)) return true;
+    if (/已答应|已承诺|义士|守夜|奉陪|好的/.test(reason)) return true;
+    return reason.length >= 6;
+  }
+
   /** 跟随是持久状态:仅 follow 意图或解除聊天可改;周期 patrol 不覆盖 */
   private applyFollowState(
     world: GameWorld,
@@ -172,8 +234,17 @@ export class LLMBrain {
     now: number
   ): void {
     if (directive.intent === 'follow') {
+      if (enemy.huntMobKind !== null) {
+        directive.intent = 'hunt';
+        directive.reason = (directive.reason ?? '') + ';维持委托狩猎';
+        return;
+      }
       const p = this.resolveFollowPlayer(world, snapshot);
-      if (p) enemy.followPlayerId = p.id;
+      if (p) {
+        enemy.followPlayerId = p.id;
+        enemy.huntMobKind = null;
+        enemy.huntForPlayerId = null;
+      }
       return;
     }
     if (UNFOLLOW_CHAT.test(snapshot.chatText ?? '')) {
@@ -183,6 +254,11 @@ export class LLMBrain {
     if (enemy.followPlayerId !== null && directive.intent === 'patrol') {
       directive.intent = 'follow';
       directive.reason = (directive.reason ?? '') + ';维持跟随';
+      return;
+    }
+    if (enemy.huntMobKind !== null && directive.intent === 'patrol') {
+      directive.intent = 'hunt';
+      directive.reason = (directive.reason ?? '') + ';维持委托狩猎';
       return;
     }
     if (enemy.followPlayerId !== null) {

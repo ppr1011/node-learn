@@ -61,90 +61,112 @@ export class CombatSystem {
 
     // ── 命中结算 ─────────────────────────────────────────────────────────
     if (pvpTarget) {
-      pvpTarget.takeDamage(player.attackDamage);
-      const damageMsg = {
-        attackerId: player.id,
-        targetId: pvpTarget.id,
-        damage: player.attackDamage,
-        targetHp: pvpTarget.hp,
-      };
-      player.session.send(MsgType.DAMAGE, damageMsg);
-      pvpTarget.session.send(MsgType.DAMAGE, damageMsg);
-      for (const other of nearby) {
-        if (other.id !== player.id && other.id !== pvpTarget.id) {
-          other.session.send(MsgType.DAMAGE, damageMsg);
-        }
-      }
-      if (pvpTarget.isDead) this.handlePlayerDeath(pvpTarget);
+      this.damagePlayer(player, pvpTarget, player.attackDamage);
       return;
     }
 
     if (!enemyTarget) return;
+    this.damageEnemy(player, enemyTarget, player.attackDamage);
+  }
 
-    enemyTarget.takeDamage(player.attackDamage);
-    if (enemyTarget.llmEnabled) {
-      NpcMemory.onPlayerHit(enemyTarget, player.name, player.attackDamage, Date.now());
-    }
-    const hitMsg = {
-      enemyId: enemyTarget.id,
-      attackerId: player.id,
-      damage: player.attackDamage,
-      enemyHp: enemyTarget.hp,
-    };
-    player.session.send(MsgType.ENEMY_HIT, hitMsg);
-    for (const other of nearby) other.session.send(MsgType.ENEMY_HIT, hitMsg);
-
-    if (enemyTarget.isDead) {
-      if (enemyTarget.llmEnabled) {
-        NpcMemory.onNpcDeath(enemyTarget, player.name, Date.now());
-        RumorBoard.add(
-          this.world,
-          enemyTarget.zoneId,
-          `${player.name}击杀了${enemyTarget.displayName || 'NPC'}`,
-          Date.now()
-        );
-      } else {
-        NpcQuests.onPlayerKillMob(
-          this.world,
-          player,
-          enemyTarget.kind,
-          enemyTarget.position.x,
-          enemyTarget.position.y,
-          Date.now()
-        );
+  /** 对玩家造成伤害并广播(技能 / 普攻共用) */
+  damagePlayer(
+    attacker: Player,
+    target: Player,
+    damage: number,
+    broadcast: boolean = true,
+  ): void {
+    const nearby = this.world.aoi.getNearbyPlayers(attacker);
+    target.takeDamage(damage);
+    if (broadcast) {
+      const damageMsg = {
+        attackerId: attacker.id,
+        targetId: target.id,
+        damage,
+        targetHp: target.hp,
+      };
+      attacker.session.send(MsgType.DAMAGE, damageMsg);
+      target.session.send(MsgType.DAMAGE, damageMsg);
+      for (const other of nearby) {
+        if (other.id !== attacker.id && other.id !== target.id) {
+          other.session.send(MsgType.DAMAGE, damageMsg);
+        }
       }
-      const deadMsg = { enemyId: enemyTarget.id };
-      player.session.send(MsgType.ENEMY_DEAD, deadMsg);
-      for (const other of nearby) other.session.send(MsgType.ENEMY_DEAD, deadMsg);
-
-      // 击杀 → 获得经验;满级则升级(可能连升),回满血 + 增强属性
-      const levelsGained = player.gainXp(enemyTarget.xpReward);
-      player.session.send(MsgType.XP_GAIN, {
-        id: player.id,
-        gained: enemyTarget.xpReward,
-        xp: player.xp,
-        xpToNext: player.xpToNext,
-        level: player.level,
-      });
-      if (levelsGained > 0) {
-        const lvMsg = {
-          id: player.id,
-          level: player.level,
-          hp: player.hp,
-          maxHp: player.maxHp,
-          xp: player.xp,
-          xpToNext: player.xpToNext,
-        };
-        player.session.send(MsgType.LEVEL_UP, lvMsg);
-        for (const other of nearby) other.session.send(MsgType.LEVEL_UP, lvMsg);
-      }
-
-      // 击杀 → 按几率掉落武器(强敌 luck 更高,更易出稀有/史诗)
-      this.world.spawnWeaponDrop(enemyTarget);
-
-      // Schedule respawn
-      enemyTarget.respawnAt = Date.now() + ENEMY_RESPAWN_TIME;
     }
+    if (target.isDead) this.handlePlayerDeath(target);
+  }
+
+  /** 对敌人造成伤害并广播;可选跳过即时广播(陨石雨汇总走 AOE_HIT) */
+  damageEnemy(
+    attacker: Player,
+    enemy: Enemy,
+    damage: number,
+    broadcast: boolean = true,
+  ): void {
+    const nearby = this.world.aoi.getNearbyPlayers(attacker);
+    enemy.takeDamage(damage);
+    if (enemy.llmEnabled) {
+      NpcMemory.onPlayerHit(enemy, attacker.name, damage, Date.now());
+    }
+    if (broadcast) {
+      const hitMsg = {
+        enemyId: enemy.id,
+        attackerId: attacker.id,
+        damage,
+        enemyHp: enemy.hp,
+      };
+      attacker.session.send(MsgType.ENEMY_HIT, hitMsg);
+      for (const other of nearby) other.session.send(MsgType.ENEMY_HIT, hitMsg);
+    }
+    if (enemy.isDead) this.onEnemyKilled(attacker, enemy, nearby);
+  }
+
+  private onEnemyKilled(attacker: Player, enemy: Enemy, nearby: Player[]): void {
+    if (enemy.llmEnabled) {
+      NpcMemory.onNpcDeath(enemy, attacker.name, Date.now());
+      RumorBoard.add(
+        this.world,
+        enemy.zoneId,
+        `${attacker.name}击杀了${enemy.displayName || 'NPC'}`,
+        Date.now()
+      );
+    } else {
+      NpcQuests.onPlayerKillMob(
+        this.world,
+        attacker,
+        enemy.kind,
+        enemy.position.x,
+        enemy.position.y,
+        Date.now()
+      );
+    }
+    const deadMsg = { enemyId: enemy.id };
+    attacker.session.send(MsgType.ENEMY_DEAD, deadMsg);
+    for (const other of nearby) other.session.send(MsgType.ENEMY_DEAD, deadMsg);
+
+    const levelsGained = attacker.gainXp(enemy.xpReward);
+    attacker.session.send(MsgType.XP_GAIN, {
+      id: attacker.id,
+      gained: enemy.xpReward,
+      xp: attacker.xp,
+      xpToNext: attacker.xpToNext,
+      level: attacker.level,
+    });
+    if (levelsGained > 0) {
+      const lvMsg = {
+        id: attacker.id,
+        level: attacker.level,
+        hp: attacker.hp,
+        maxHp: attacker.maxHp,
+        xp: attacker.xp,
+        xpToNext: attacker.xpToNext,
+      };
+      attacker.session.send(MsgType.LEVEL_UP, lvMsg);
+      for (const other of nearby) other.session.send(MsgType.LEVEL_UP, lvMsg);
+    }
+
+    this.world.spawnWeaponDrop(enemy);
+    enemy.respawnAt = Date.now() + ENEMY_RESPAWN_TIME;
   }
 
   /** Called by CombatSystem or EnemyAISystem when a player's HP drops to 0 */

@@ -124,9 +124,12 @@ function extractMessageContent(body: Record<string, unknown>): string {
 const SYSTEM_PROMPT = [
   '你是 MMO 游戏里的一名 NPC Agent。只输出一个 JSON 对象,禁止 markdown 与解释文字。',
   '必填 intent: attack flee patrol taunt hunt follow(小写)。可选 speech(中文≤30字) reason(≤20字)。',
+  '玩家发起对话时 speech 必填(对玩家说的台词);reason 仅填内部备注(如"无威胁"),勿把台词写在 reason。',
   '无玩家对话时通常省略 speech(仅 taunt/打招呼才说话),尽量精简输出。',
-  '示例:{"intent":"patrol","reason":"无威胁"}',
+  '示例(有对话):{"intent":"taunt","speech":"守夜人,听个睡前故事吧","reason":"讲笑话"}',
+  '示例(无对话):{"intent":"patrol","reason":"无威胁"}',
   '规则:高信任友善;曾承诺不攻击勿 attack;残血 flee;邀请跟随用 follow;附近怪 hunt。',
+  '玩家委托清怪(帮我去打/你去打)用 hunt;有进行中委托时优先击杀委托目标种类;',
   '玩家名后 [英雄]/[屠夫] 为全局声望,据此定初见语气;夜晚倾向回巢少战;',
   '小队分工:striker 强攻 / flanker 包抄 / bait 引怪,台词体现协作。',
 ].join('\n');
@@ -352,6 +355,15 @@ export class MockLLMProvider implements LLMProvider {
           intent: 'follow',
           speech: `好的,${snapshot.chatFrom},我跟你走。`,
           reason: '玩家邀请跟随(Mock)',
+          decidedAt: now,
+        };
+      }
+      if (/你去打|帮我去打|帮我打|去清理|去打怪|帮忙打|清怪|狩猎|打几只/.test(text)) {
+        const questHint = snapshot.activeQuest ? `,${snapshot.activeQuest}` : '';
+        return {
+          intent: 'hunt',
+          speech: `遵命,这就去清怪${questHint}!`,
+          reason: '玩家委托狩猎(Mock)',
           decidedAt: now,
         };
       }

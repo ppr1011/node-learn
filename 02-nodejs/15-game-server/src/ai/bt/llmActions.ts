@@ -8,8 +8,9 @@ import { NpcAgentSystem } from '../agent/NpcAgentSystem';
 import { NpcSchedule } from '../agent/schedule';
 import { GameConfig } from '../../config';
 import { MsgType } from '../../network/Protocol';
-import { Enemy } from '../../core/Enemy';
+import { Enemy, EnemyKind } from '../../core/Enemy';
 import { NpcMemory } from '../llm/memory';
+import { NpcQuests } from '../agent/quest';
 import {
   acquireTarget,
   inAttackRange,
@@ -134,19 +135,52 @@ export function hasNearbyMob(ctx: BTContext): boolean {
   return acquireMobTarget(ctx);
 }
 
-/** 探测最近普通怪物 → ctx.mobTarget */
-export function acquireMobTarget(ctx: BTContext): boolean {
-  const { enemy, world } = ctx;
+function findNearestMob(
+  enemy: Enemy,
+  world: BTContext['world'],
+  maxRange: number,
+  kindFilter: EnemyKind | null
+): Enemy | null {
   let nearest: Enemy | null = null;
-  let min = enemy.detectionRange;
+  let min = maxRange;
   for (const other of world.enemies.values()) {
     if (other.id === enemy.id || other.isDead || other.llmEnabled) continue;
+    if (kindFilter && other.kind !== kindFilter) continue;
     const d = dist(enemy.position.x, enemy.position.y, other.position.x, other.position.y);
     if (d < min) { min = d; nearest = other; }
   }
+  return nearest;
+}
+
+/** 探测最近普通怪物 → ctx.mobTarget(默认仅在 detectionRange 内) */
+export function acquireMobTarget(ctx: BTContext): boolean {
+  const { enemy, world } = ctx;
+  const nearest = findNearestMob(enemy, world, enemy.detectionRange, enemy.huntMobKind);
   ctx.mobTarget = nearest;
   enemy.targetEnemyId = nearest ? nearest.id : null;
   return !!nearest;
+}
+
+/** 委托狩猎:全图搜索指定种类怪物并写入 ctx.mobTarget */
+export function acquireMobTargetSeek(ctx: BTContext): boolean {
+  const { enemy, world } = ctx;
+  const nearest = findNearestMob(enemy, world, GameConfig.LLM_HUNT_SEEK_RANGE, enemy.huntMobKind);
+  ctx.mobTarget = nearest;
+  enemy.targetEnemyId = nearest ? nearest.id : null;
+  return !!nearest;
+}
+
+export function shouldSeekMob(ctx: BTContext): boolean {
+  const { enemy } = ctx;
+  if (!enemy.llmEnabled || llmWantsFlee(ctx)) return false;
+  if (!llmWantsHunt(ctx) && enemy.huntMobKind === null) return false;
+  if (acquireMobTarget(ctx)) return false;
+  return acquireMobTargetSeek(ctx);
+}
+
+/** 朝远处委托目标移动(进入 detectionRange 后由 chaseMob 接管) */
+export function seekMob(ctx: BTContext): NodeStatus {
+  return chaseMob(ctx);
 }
 
 export function inMobAttackRange(ctx: BTContext): boolean {
@@ -180,11 +214,25 @@ export function attackMob(ctx: BTContext): NodeStatus {
       broadcastNear(ctx, enemy.position.x, enemy.position.y, MsgType.ENEMY_DEAD, deadMsg, enemy.detectionRange * 2);
       mobTarget.respawnAt = Date.now() + GameConfig.ENEMY_RESPAWN_TIME;
       let allyName: string | undefined;
-      if (enemy.followPlayerId !== null) {
-        const ally = world.players.get(enemy.followPlayerId);
-        allyName = ally?.name;
+      let allyPlayer = enemy.huntForPlayerId !== null
+        ? world.players.get(enemy.huntForPlayerId)
+        : null;
+      if (!allyPlayer && enemy.followPlayerId !== null) {
+        allyPlayer = world.players.get(enemy.followPlayerId);
       }
+      allyName = allyPlayer?.name;
       NpcMemory.onMobKill(enemy, mobTarget.kind, now, allyName);
+      if (allyPlayer) {
+        NpcQuests.onNpcKillMob(
+          world,
+          allyPlayer,
+          enemy,
+          mobTarget.kind,
+          mobTarget.position.x,
+          mobTarget.position.y,
+          now
+        );
+      }
       ctx.mobTarget = null;
       enemy.targetEnemyId = null;
     }
@@ -284,11 +332,14 @@ export function shouldAttackPlayer(ctx: BTContext): boolean {
   return true;
 }
 
-/** 应主动狩猎:显式 hunt / 跟随途中顺路清怪 / 巡逻时附近刷怪 */
+/** 应主动狩猎:显式 hunt / 委托清怪 / 跟随途中顺路清怪 / 巡逻时附近刷怪 */
 export function shouldHuntMob(ctx: BTContext): boolean {
   if (!ctx.enemy.llmEnabled) return false;
   if (llmWantsFlee(ctx)) return false;
-  if (llmWantsHunt(ctx) || ctx.enemy.followPlayerId !== null) {
+  if (llmWantsHunt(ctx) || ctx.enemy.huntMobKind !== null) {
+    return true;
+  }
+  if (ctx.enemy.followPlayerId !== null) {
     return acquireMobTarget(ctx);
   }
   // 夜晚回巢休整:不主动清怪(跟随 / 显式 hunt 已在上面放行)

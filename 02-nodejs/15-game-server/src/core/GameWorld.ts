@@ -11,6 +11,7 @@ import { GameTimer } from '../utils/Timer';
 import { MovementSystem } from '../systems/MovementSystem';
 import { ChatSystem } from '../systems/ChatSystem';
 import { CombatSystem } from '../systems/CombatSystem';
+import { SkillSystem } from '../systems/SkillSystem';
 import { EnemyAISystem } from '../systems/EnemyAISystem';
 import { NpcAgentSystem } from '../ai/agent/NpcAgentSystem';
 import { RumorEntry } from '../ai/agent/rumor';
@@ -24,6 +25,7 @@ import { rollWeaponDrop } from './Weapon';
 import { HealthPack } from './HealthPack';
 import { PlayerStore } from './PlayerStore';
 import { ExplorationMap } from './ExplorationMap';
+import { DEFAULT_SKILL_IDS } from './Skills';
 import { Zone, ZONES, ZONE_ENEMY_COUNT, zonePublicState } from './Zone';
 
 /** 击杀不同敌人的掉落幸运系数(越高越易出稀有/史诗/传说);再乘所在区域的 dropLuck */
@@ -49,6 +51,7 @@ export class GameWorld {
   readonly movement: MovementSystem;
   readonly chat: ChatSystem;
   readonly combat: CombatSystem;
+  readonly skills: SkillSystem;
   readonly enemyAI: EnemyAISystem;
   readonly npcAgent: NpcAgentSystem;
   rumorBoard?: Map<number, RumorEntry[]>;
@@ -122,6 +125,7 @@ export class GameWorld {
     this.movement = new MovementSystem(this);
     this.chat = new ChatSystem(this);
     this.combat = new CombatSystem(this);
+    this.skills = new SkillSystem(this, this.combat);
     this.enemyAI = new EnemyAISystem(this);
     this.npcAgent = new NpcAgentSystem(this);
 
@@ -226,6 +230,7 @@ export class GameWorld {
         revealRadius: GameConfig.FOG_REVEAL_RADIUS,
         explored: player.exploration.toBase64(),
       },
+      skills: DEFAULT_SKILL_IDS,
     });
 
     // 通知附近玩家有新人加入
@@ -244,6 +249,7 @@ export class GameWorld {
 
     this.aoi.removePlayer(player);
     this.players.delete(player.id);
+    this.skills.removePlayer(player.id);
 
     // 通知所有能看到该玩家的人
     for (const otherId of player.visiblePlayers) {

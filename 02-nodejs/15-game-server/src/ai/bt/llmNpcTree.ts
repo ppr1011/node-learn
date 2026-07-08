@@ -27,6 +27,8 @@ import {
   inMobAttackRange,
   attackMob,
   chaseMob,
+  shouldSeekMob,
+  seekMob,
   shouldReturnHome,
   returnHome,
 } from './llmActions';
@@ -46,6 +48,7 @@ export function buildLlmNpcTree(kind: EnemyKind): BTNode {
       seq(cond('inMobRange', inMobAttackRange), act('attackMob', attackMob)),
       act('chaseMob', chaseMob)
     )),
+    seq(cond('shouldSeekMob', shouldSeekMob), act('seekMob', seekMob)),
     act('patrol', patrol)
   );
 

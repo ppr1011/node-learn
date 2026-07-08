@@ -104,6 +104,7 @@ export const GameConfig = {
   LLM_MEMORY_MAX: 16,           // 每个 NPC episodic 记忆条数上限
   LLM_QUEST_DEFAULT_COUNT: 3,   // 默认委托击杀数量
   LLM_QUEST_REWARD_XP: 35,      // 委托完成基础经验
+  LLM_HUNT_SEEK_RANGE: 8000,    // NPC 委托狩猎时全图搜索半径(px)
   LLM_RUMOR_MAX: 8,             // 每个难度带传闻条数上限
 
   // 昼夜日程(功能7):一整天压缩为 DAY_CYCLE_MS 真实时长,循环推进 黎明→白天→黄昏→夜晚

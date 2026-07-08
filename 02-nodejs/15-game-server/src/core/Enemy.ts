@@ -81,6 +81,8 @@ export class Enemy extends Entity {
   llmSituation: string = ''; // 上次决策时的情形签名(省 token:情形不变则跳过重算)
   followPlayerId: number | null = null; // 跟随模式:持久绑定玩家 id
   followBoostTimer: number = 0; // 「走快点」临时加速(秒)
+  huntMobKind: EnemyKind | null = null; // 委托狩猎目标种类(null=任意普通怪)
+  huntForPlayerId: number | null = null; // 委托狩猎受益玩家 id
   /** Agent 记忆: episodic 事件流 + 玩家关系(每 NPC 独立) */
   llmMemory: NpcMemoryEntry[] = [];
   llmRelations: Record<string, NpcPlayerRelation> = {};
@@ -142,6 +144,14 @@ export class Enemy extends Entity {
     if (this.hp <= 0) this.isDead = true;
   }
 
+  /** 治疗(玩家技能可对 NPC/怪物使用);返回实际回复量 */
+  heal(amount: number): number {
+    if (this.isDead) return 0;
+    const actual = Math.min(amount, this.maxHp - this.hp);
+    this.hp = Math.min(this.maxHp, this.hp + amount);
+    return actual;
+  }
+
   respawn(x: number, y: number): void {
     this.hp = this.maxHp;
     this.isDead = false;
@@ -159,6 +169,8 @@ export class Enemy extends Entity {
     this.llmPoseTimer = 0;
     this.followPlayerId = null;
     this.followBoostTimer = 0;
+    this.huntMobKind = null;
+    this.huntForPlayerId = null;
     this.squadId = null;
     this.squadRole = null;
     this.squadTargetId = null;

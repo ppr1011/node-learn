@@ -147,6 +147,15 @@ export class NpcMemory {
     if (r.trust < -30) r.label = '袭击者';
   }
 
+  static onPlayerHeal(enemy: Enemy, playerName: string, amount: number, now: number): void {
+    if (!enemy.llmEnabled) return;
+    const r = this.relation(enemy, playerName, now);
+    r.helped++;
+    this.bumpTrust(enemy, playerName, 10, now);
+    this.add(enemy, 'bond', `${playerName}治疗了我(+${amount}HP)`, now, playerName);
+    if (r.trust >= 25 && !r.label) r.label = '恩人';
+  }
+
   static onMobKill(enemy: Enemy, mobKind: string, now: number, allyName?: string): void {
     if (!enemy.llmEnabled) return;
     this.add(enemy, 'world', `击杀了${mobKind}`, now, allyName);

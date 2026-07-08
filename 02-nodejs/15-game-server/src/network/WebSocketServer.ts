@@ -101,6 +101,12 @@ export class GameWebSocketServer {
         }
         break;
 
+      case MsgType.C_CAST:
+        if (player) {
+          this.world.skills.handleCast(player, msg.data);
+        }
+        break;
+
       case MsgType.C_NPC_INFO:
         if (player && typeof msg.data?.enemyId === 'number') {
           this.world.npcAgent.handleNpcInfo(player, msg.data.enemyId);
