@@ -6,7 +6,9 @@
  */
 
 /** LLM 可输出的战术意图(白名单,防止模型幻觉出非法动作) */
-export type LLMIntent = 'attack' | 'flee' | 'patrol' | 'taunt' | 'hunt' | 'follow';
+export type LLMIntent =
+  | 'attack' | 'flee' | 'patrol' | 'taunt' | 'hunt' | 'follow'
+  | 'guide' | 'escort' | 'follow_npc';
 
 /** 一次 LLM 决策的结果,挂在 enemy 黑板上供 BT 读取 */
 export interface LLMDirective {
@@ -59,4 +61,8 @@ export interface LLMGameSnapshot {
   timeOfDay: string;
   /** 小队分工(功能9):在队时注入,否则 undefined */
   squad?: { role: string; allies: string[]; target: string };
+  /** 附近 LLM NPC(功能10 A2A) */
+  nearbyNpcs?: Array<{ name: string; distance: number; role?: string }>;
+  /** 当前 A2A 协作任务摘要 */
+  a2aMission?: string;
 }

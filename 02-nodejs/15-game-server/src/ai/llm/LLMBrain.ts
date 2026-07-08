@@ -18,6 +18,7 @@ import { NpcQuests } from '../agent/quest';
 import { timeLabel } from '../agent/schedule';
 import { Reputation } from '../agent/reputation';
 import { squadSnapshot } from '../agent/squad';
+import { nearbyNpcs } from '../agent/a2a';
 
 const FOLLOW_CHAT = /跟着我|跟随|follow|一起走|跟我走|跟上/;
 const UNFOLLOW_CHAT = /别跟|不用跟|留下|自己巡逻|在这等|不用管我/;
@@ -80,7 +81,8 @@ export class LLMBrain {
     }
     const following = enemy.followPlayerId !== null;
     const hunting = enemy.huntMobKind !== null;
-    const engaged = near.length > 0 || following || hunting;
+    const a2aActive = enemy.a2aRole !== null || enemy.followNpcId !== null;
+    const engaged = near.length > 0 || following || hunting || a2aActive;
     const sig = [
       near.sort().join(','),
       Math.round((enemy.hp / enemy.maxHp) * 4), // 血量四分桶
@@ -88,6 +90,7 @@ export class LLMBrain {
       following ? 'F' : '',
       hunting ? 'H' : '',
       enemy.squadRole ?? '',
+      enemy.a2aRole ?? '',
       mobNear ? 'M' : '',
       world.dayPhase,
     ].join('|');
@@ -143,6 +146,7 @@ export class LLMBrain {
       .decide(snapshot)
       .then((directive) => {
         this.applyFollowState(world, enemy, directive, snapshot, now);
+        this.applyA2aState(enemy, directive, snapshot);
         if (snapshot.chatText) {
           this.ensureChatSpeech(snapshot, directive);
         }
@@ -158,7 +162,7 @@ export class LLMBrain {
       })
       .catch((err: Error) => {
         logger.warn(`[LLM] ${enemy.displayName ?? enemy.kind}#${enemy.id} 决策失败: ${err.message}`);
-        if (enemy.followPlayerId === null) {
+        if (enemy.followPlayerId === null && enemy.a2aRole === null && enemy.followNpcId === null) {
           enemy.llmDirective = {
             intent: 'patrol',
             reason: 'LLM 失败回退',
@@ -210,6 +214,15 @@ export class LLMBrain {
       case 'hunt':
         directive.speech = '发现怪物,我来清理!';
         break;
+      case 'guide':
+        directive.speech = '跟我来,我带你去找。';
+        break;
+      case 'escort':
+        directive.speech = '好,我这就去接人。';
+        break;
+      case 'follow_npc':
+        directive.speech = '好,我跟你走。';
+        break;
       case 'taunt':
         directive.speech = `……${who},听你吩咐。`;
         break;
@@ -233,6 +246,8 @@ export class LLMBrain {
     snapshot: LLMGameSnapshot,
     now: number
   ): void {
+    if (enemy.a2aRole === 'guide' || enemy.a2aRole === 'escort') return;
+    if (enemy.followNpcId !== null) return;
     if (directive.intent === 'follow') {
       if (enemy.huntMobKind !== null) {
         directive.intent = 'hunt';
@@ -266,6 +281,28 @@ export class LLMBrain {
       if (!p || p.isDead) {
         enemy.followPlayerId = null;
       }
+    }
+  }
+
+  /** A2A 带路/护送是持久状态:周期 patrol 不覆盖 */
+  private applyA2aState(
+    enemy: Enemy,
+    directive: LLMDirective,
+    snapshot: LLMGameSnapshot
+  ): void {
+    if (enemy.a2aRole === 'guide' && directive.intent === 'patrol') {
+      directive.intent = 'guide';
+      directive.reason = (directive.reason ?? '') + ';维持带路';
+      return;
+    }
+    if (enemy.a2aRole === 'escort' && directive.intent === 'patrol') {
+      directive.intent = 'escort';
+      directive.reason = (directive.reason ?? '') + ';维持护送';
+      return;
+    }
+    if (enemy.followNpcId !== null && directive.intent === 'patrol') {
+      directive.intent = 'follow_npc';
+      directive.reason = (directive.reason ?? '') + ';维持NPC跟随';
     }
   }
 
@@ -342,6 +379,8 @@ export class LLMBrain {
       activeQuest: questLine ?? undefined,
       timeOfDay: timeLabel(world.dayPhase),
       squad: squadSnapshot(world, enemy),
+      nearbyNpcs: nearbyNpcs(world, enemy, enemy.detectionRange * 2),
+      a2aMission: world.npcAgent.escort.missionSnapshot(enemy),
     };
   }
 

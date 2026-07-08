@@ -118,4 +118,9 @@ export const GameConfig = {
   // 多 Agent 协作 / 小队(功能9)
   SQUAD_RADIUS: 320,            // 组队所需的 NPC 相互靠近半径
   SQUAD_ANNOUNCE_COOLDOWN_MS: 12000, // leader 播报协调台词的冷却
+
+  // A2A 带路/护送(功能10)
+  A2A_GUIDE_ARRIVE_DIST: 120,   // 带路到达目标 NPC 的判定距离
+  A2A_ESCORT_MEET_DIST: 100,    // 护送者接到目标 NPC 的判定距离
+  A2A_ESCORT_ARRIVE_DIST: 140,  // 护送返回目的地的判定距离
 } as const;

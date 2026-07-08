@@ -6,7 +6,10 @@ import { LLMDirective, LLMGameSnapshot, LLMIntent } from './types';
 import { GameConfig } from '../../config';
 import { logger } from '../../utils/Logger';
 
-const VALID_INTENTS: LLMIntent[] = ['attack', 'flee', 'patrol', 'taunt', 'hunt', 'follow'];
+const VALID_INTENTS: LLMIntent[] = [
+  'attack', 'flee', 'patrol', 'taunt', 'hunt', 'follow',
+  'guide', 'escort', 'follow_npc',
+];
 
 export interface LLMProvider {
   decide(snapshot: LLMGameSnapshot): Promise<LLMDirective>;
@@ -123,7 +126,7 @@ function extractMessageContent(body: Record<string, unknown>): string {
 // 系统提示为常量(每次请求相同),避免重复拼接;DeepSeek 对稳定前缀可命中上下文缓存
 const SYSTEM_PROMPT = [
   '你是 MMO 游戏里的一名 NPC Agent。只输出一个 JSON 对象,禁止 markdown 与解释文字。',
-  '必填 intent: attack flee patrol taunt hunt follow(小写)。可选 speech(中文≤30字) reason(≤20字)。',
+  '必填 intent: attack flee patrol taunt hunt follow guide escort follow_npc(小写)。可选 speech(中文≤30字) reason(≤20字)。',
   '玩家发起对话时 speech 必填(对玩家说的台词);reason 仅填内部备注(如"无威胁"),勿把台词写在 reason。',
   '无玩家对话时通常省略 speech(仅 taunt/打招呼才说话),尽量精简输出。',
   '示例(有对话):{"intent":"taunt","speech":"守夜人,听个睡前故事吧","reason":"讲笑话"}',
@@ -132,6 +135,7 @@ const SYSTEM_PROMPT = [
   '玩家委托清怪(帮我去打/你去打)用 hunt;有进行中委托时优先击杀委托目标种类;',
   '玩家名后 [英雄]/[屠夫] 为全局声望,据此定初见语气;夜晚倾向回巢少战;',
   '小队分工:striker 强攻 / flanker 包抄 / bait 引怪,台词体现协作。',
+  'A2A协作:玩家说「带我去找XX」用 guide;「把XX带过来」用 escort;被护送方跟随用 follow_npc。',
 ].join('\n');
 
 /**
@@ -146,13 +150,18 @@ function buildUserPrompt(s: LLMGameSnapshot): string {
   const squad = s.squad
     ? `小队协作:你的分工是 ${s.squad.role},队友 ${s.squad.allies.join('、') || '无'},共同目标 ${s.squad.target}`
     : '';
+  const npcs = (s.nearbyNpcs ?? [])
+    .map((n) => `${n.name}(距${n.distance}px${n.role ? ',' + n.role : ''})`)
+    .join(', ') || '无';
   const head = [
     `NPC:${s.npcName}(${s.kind}),性格:${s.personality}`,
     `自身:HP ${s.hp}/${s.maxHp},状态 ${s.aiState},心情 ${s.moodLabel},区域 ${s.zoneName},天气 ${s.weather},时段 ${s.timeOfDay}`,
     `附近玩家:${players}`,
+    `附近NPC:${npcs}`,
     `附近怪物数量:${s.nearbyMobCount}`,
     `正在跟随玩家:${s.isFollowing ? '是' : '否'}`,
     squad,
+    s.a2aMission ? `A2A任务:${s.a2aMission}` : '',
     s.activeQuest ? `进行中委托:${s.activeQuest}` : '',
   ];
 
@@ -345,6 +354,16 @@ export class MockLLMProvider implements LLMProvider {
       };
     }
 
+    if (snapshot.a2aMission?.includes('带路')) {
+      return { intent: 'guide', reason: '维持带路(Mock)', decidedAt: now };
+    }
+    if (snapshot.a2aMission?.includes('护送')) {
+      return { intent: 'escort', reason: '维持护送(Mock)', decidedAt: now };
+    }
+    if (snapshot.a2aMission?.includes('被') && snapshot.a2aMission.includes('护送')) {
+      return { intent: 'follow_npc', reason: '维持NPC跟随(Mock)', decidedAt: now };
+    }
+
     if (snapshot.chatText) {
       const rel = snapshot.playerRelations.find((r) => snapshot.chatFrom && r.startsWith(snapshot.chatFrom));
       const highTrust = rel && /信任([3-9]\d|[1-9]\d{2,})/.test(rel);
@@ -364,6 +383,26 @@ export class MockLLMProvider implements LLMProvider {
           intent: 'hunt',
           speech: `遵命,这就去清怪${questHint}!`,
           reason: '玩家委托狩猎(Mock)',
+          decidedAt: now,
+        };
+      }
+      if (/(?:带我去找|带路去|带我去见|带我见|引我去|领我去|带我去)\s*(.+)/.test(text)) {
+        const m = text.match(/(?:带我去找|带路去|带我去见|带我见|引我去|领我去|带我去)\s*(.+)/);
+        const target = m?.[1]?.trim() ?? '同伴';
+        return {
+          intent: 'guide',
+          speech: `好,我带你去找${target}!`,
+          reason: '玩家请求带路(Mock)',
+          decidedAt: now,
+        };
+      }
+      if (/(?:把|请|叫|去接)\s*(.+?)(?:带过来|带来|过来|回来|接回来)/.test(text)) {
+        const m = text.match(/(?:把|请|叫|去接)\s*(.+?)(?:带过来|带来|过来|回来|接回来)/);
+        const target = m?.[1]?.trim() ?? '同伴';
+        return {
+          intent: 'escort',
+          speech: `收到,我去请${target}过来!`,
+          reason: '玩家请求护送(Mock)',
           decidedAt: now,
         };
       }

@@ -81,7 +81,21 @@ export function llmWantsFollow(ctx: BTContext): boolean {
   return intent(ctx) === 'follow';
 }
 
+export function llmWantsGuide(ctx: BTContext): boolean {
+  return intent(ctx) === 'guide';
+}
+
+export function llmWantsEscort(ctx: BTContext): boolean {
+  return intent(ctx) === 'escort';
+}
+
+export function llmWantsFollowNpc(ctx: BTContext): boolean {
+  return intent(ctx) === 'follow_npc';
+}
+
 const FOLLOW_DIST = 58;
+const NPC_FOLLOW_DIST = 62;
+const GUIDE_PLAYER_WAIT = 520; // 带路时等玩家跟上,超过此距离则缓步等待
 const FOLLOW_MAX_DIST = 900;
 
 /** 解析跟随目标 → ctx.target */
@@ -284,6 +298,7 @@ export function shouldReturnHome(ctx: BTContext): boolean {
   const { enemy, world } = ctx;
   if (!enemy.llmEnabled) return false;
   if (enemy.followPlayerId !== null) return false;
+  if (enemy.a2aRole !== null || enemy.followNpcId !== null) return false;
   if (enemy.llmDirective?.intent === 'flee') return false;
   if (!NpcSchedule.biasFor(world.dayPhase).homebound) return false;
   const d = dist(enemy.position.x, enemy.position.y, enemy.spawnX, enemy.spawnY);
@@ -336,6 +351,8 @@ export function shouldAttackPlayer(ctx: BTContext): boolean {
 export function shouldHuntMob(ctx: BTContext): boolean {
   if (!ctx.enemy.llmEnabled) return false;
   if (llmWantsFlee(ctx)) return false;
+  if (ctx.enemy.a2aRole === 'guide' || ctx.enemy.a2aRole === 'escort') return false;
+  if (ctx.enemy.followNpcId !== null) return false;
   if (llmWantsHunt(ctx) || ctx.enemy.huntMobKind !== null) {
     return true;
   }
@@ -356,6 +373,97 @@ export function shouldHuntMob(ctx: BTContext): boolean {
     return acquireMobTarget(ctx);
   }
   return false;
+}
+
+/** 是否处于带路模式 */
+export function shouldGuide(ctx: BTContext): boolean {
+  const { enemy } = ctx;
+  return enemy.llmEnabled && enemy.a2aRole === 'guide' && enemy.guideTargetNpcId !== null;
+}
+
+/** 带路:走向目标 NPC,玩家落后时缓步等待 */
+export function guideToNpc(ctx: BTContext): NodeStatus {
+  const { enemy, world } = ctx;
+  const target = enemy.guideTargetNpcId !== null
+    ? world.enemies.get(enemy.guideTargetNpcId)
+    : null;
+  if (!target || target.isDead) return 'failure';
+
+  const player = enemy.guideForPlayerId !== null
+    ? world.players.get(enemy.guideForPlayerId)
+    : null;
+  if (player && !player.isDead) {
+    const pd = dist(enemy.position.x, enemy.position.y, player.position.x, player.position.y);
+    const td = dist(enemy.position.x, enemy.position.y, target.position.x, target.position.y);
+    if (pd > GUIDE_PLAYER_WAIT && td > GameConfig.A2A_GUIDE_ARRIVE_DIST * 2) {
+      enemy.aiState = 'idle';
+      enemy.velocity = { x: 0, y: 0 };
+      return 'running';
+    }
+  }
+
+  enemy.aiState = 'patrol';
+  moveToward(enemy, target.position.x, target.position.y, enemy.speed * 0.9);
+  return 'running';
+}
+
+/** 是否处于护送模式 */
+export function shouldEscort(ctx: BTContext): boolean {
+  const { enemy } = ctx;
+  return enemy.llmEnabled && enemy.a2aRole === 'escort' && enemy.escortTargetNpcId !== null;
+}
+
+export function isEscortSeek(ctx: BTContext): boolean {
+  return ctx.enemy.escortPhase === 'seek';
+}
+
+/** 护送阶段1:前往目标 NPC */
+export function escortSeek(ctx: BTContext): NodeStatus {
+  const { enemy, world } = ctx;
+  const target = enemy.escortTargetNpcId !== null
+    ? world.enemies.get(enemy.escortTargetNpcId)
+    : null;
+  if (!target || target.isDead) return 'failure';
+  enemy.aiState = 'patrol';
+  moveToward(enemy, target.position.x, target.position.y, enemy.speed);
+  return 'running';
+}
+
+/** 护送阶段2:带目标 NPC 返回目的地 */
+export function escortLead(ctx: BTContext): NodeStatus {
+  const { enemy } = ctx;
+  enemy.aiState = 'patrol';
+  moveToward(enemy, enemy.escortDestX, enemy.escortDestY, enemy.speed * 0.85);
+  return 'running';
+}
+
+/** 是否跟随另一 NPC(A2A 被护送方) */
+export function shouldFollowNpc(ctx: BTContext): boolean {
+  const { enemy } = ctx;
+  return enemy.llmEnabled && enemy.followNpcId !== null;
+}
+
+/** 跟随另一 NPC,保持间距 */
+export function followNpc(ctx: BTContext): NodeStatus {
+  const { enemy, world } = ctx;
+  if (enemy.followNpcId === null) return 'failure';
+  const leader = world.enemies.get(enemy.followNpcId);
+  if (!leader || leader.isDead) {
+    enemy.followNpcId = null;
+    enemy.a2aRole = null;
+    return 'failure';
+  }
+
+  const d = dist(enemy.position.x, enemy.position.y, leader.position.x, leader.position.y);
+  if (d <= NPC_FOLLOW_DIST) {
+    enemy.aiState = 'idle';
+    enemy.velocity = { x: 0, y: 0 };
+    return 'running';
+  }
+
+  enemy.aiState = 'patrol';
+  moveToward(enemy, leader.position.x, leader.position.y, enemy.speed * 0.92);
+  return 'running';
 }
 
 export { acquireTarget, inAttackRange, attack, chase, flee, patrol };

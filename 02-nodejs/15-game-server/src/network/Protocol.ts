@@ -50,6 +50,7 @@ export enum MsgType {
   C_NPC_INFO = 'c_npc_info',
   NPC_INFO = 's_npc_info',
   NPC_QUEST = 's_quest',
+  NPC_A2A = 's_a2a', // A2A 协作状态广播(功能10)
 }
 
 export interface GameMessage {

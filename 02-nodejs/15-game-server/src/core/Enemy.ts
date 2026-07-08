@@ -3,6 +3,8 @@ import { LLMDirective } from '../ai/llm/types';
 import { NpcMemoryEntry, NpcPlayerRelation } from '../ai/llm/memory';
 import { NpcQuest } from '../ai/agent/quest';
 
+export type EscortPhase = 'seek' | 'lead';
+
 export type EnemyKind = 'slime' | 'skeleton' | 'demon' | 'orc' | 'wraith' | 'golem' | 'dragon';
 export type EnemyAIState = 'idle' | 'patrol' | 'chase' | 'attack' | 'flee';
 
@@ -95,6 +97,17 @@ export class Enemy extends Entity {
   squadRole: string | null = null;      // 'striker' | 'flanker' | 'bait'
   squadTargetId: number | null = null;  // 小队共同目标怪 id
 
+  // A2A 协作(功能10):带路 / 护送
+  guideTargetNpcId: number | null = null;  // 带路目标 NPC
+  guideForPlayerId: number | null = null;  // 为谁带路
+  escortPhase: EscortPhase | null = null;  // seek=去接人 / lead=带回来
+  escortTargetNpcId: number | null = null;
+  escortDestX: number = 0;
+  escortDestY: number = 0;
+  escortForPlayerId: number | null = null;
+  followNpcId: number | null = null;       // 跟随另一 NPC(被护送方)
+  a2aRole: string | null = null;           // 'guide' | 'escort' | 'escorted'
+
   readonly attackDamage: number;
   readonly attackRange: number;
   readonly detectionRange: number;
@@ -174,6 +187,15 @@ export class Enemy extends Entity {
     this.squadId = null;
     this.squadRole = null;
     this.squadTargetId = null;
+    this.guideTargetNpcId = null;
+    this.guideForPlayerId = null;
+    this.escortPhase = null;
+    this.escortTargetNpcId = null;
+    this.escortDestX = 0;
+    this.escortDestY = 0;
+    this.escortForPlayerId = null;
+    this.followNpcId = null;
+    this.a2aRole = null;
     this.idleTimer = 1 + Math.random() * 2;
     this.respawnAt = 0;
     this.position.x = x;
@@ -196,6 +218,7 @@ export class Enemy extends Entity {
       state.displayName = this.displayName;
       state.llmEnabled = true;
       if (this.squadRole) state.squadRole = this.squadRole;
+      if (this.a2aRole) state.a2aRole = this.a2aRole;
     }
     return state;
   }

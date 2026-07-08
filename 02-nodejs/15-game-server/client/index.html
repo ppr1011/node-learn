@@ -1859,6 +1859,7 @@
       const rumors = (data.rumors || []).map((r) => `<li>${esc(r)}</li>`).join('') || '<li>暂无传闻</li>';
       const unlocks = (data.unlocks || []).map((u) => `<li>${esc(u)}</li>`).join('');
       const squadRoleLabel = data.squadRole && SQUAD_ROLE[data.squadRole] ? SQUAD_ROLE[data.squadRole].label : null;
+      const a2aRoleLabel = data.a2aRole && A2A_ROLE[data.a2aRole] ? A2A_ROLE[data.a2aRole].label : null;
       body.innerHTML = `
         <div class="row"><b>性格</b> ${esc(data.personality || '')}</div>
         <div class="row"><b>时段</b> ${esc(data.timeOfDay || '')}</div>
@@ -1866,6 +1867,7 @@
         <div class="row"><b>对你的信任</b> ${data.trust} · ${esc(data.relationLabel)}</div>
         <div class="row"><b>你的声望</b> ${esc(data.playerTag || '旅人')}</div>
         ${squadRoleLabel ? `<div class="row"><b>小队分工</b> ${esc(squadRoleLabel)}</div>` : ''}
+        ${a2aRoleLabel ? `<div class="row"><b>A2A协作</b> ${esc(a2aRoleLabel)}${data.a2aMission ? ' · ' + esc(data.a2aMission) : ''}</div>` : ''}
         <div class="row"><b>跟随中</b> ${data.following ? '是' : '否'}</div>
         ${data.quest ? `<div class="row"><b>委托</b> ${esc(data.quest)}</div>` : ''}
         ${unlocks ? `<div class="row"><b>已解锁</b><ul>${unlocks}</ul></div>` : ''}
@@ -3015,8 +3017,11 @@
       ctx.fillText(label, sx, nameY);
 
       // 小队分工徽标(功能9):在名字上方显示角色
-      if (e.squadRole && SQUAD_ROLE[e.squadRole]) {
-        const rt = SQUAD_ROLE[e.squadRole];
+      const roleBadge = (e.squadRole && SQUAD_ROLE[e.squadRole])
+        ? SQUAD_ROLE[e.squadRole]
+        : (e.a2aRole && A2A_ROLE[e.a2aRole] ? A2A_ROLE[e.a2aRole] : null);
+      if (roleBadge) {
+        const rt = roleBadge;
         ctx.font = 'bold 9px Courier New';
         const rw = ctx.measureText(rt.label).width;
         const ry = nameY - 12;
@@ -3978,6 +3983,12 @@
       striker: { label: '主攻', color: '#ff6b6b' },
       flanker: { label: '包抄', color: '#4ecca3' },
       bait:    { label: '引怪', color: '#ffd23f' },
+    };
+    // A2A 协作徽标(功能10)
+    const A2A_ROLE = {
+      guide:    { label: '带路', color: '#6bcbff' },
+      escort:   { label: '护送', color: '#c77dff' },
+      escorted: { label: '被护送', color: '#9b8cff' },
     };
     // 昼夜屏幕叠加(功能7):夜晚深蓝压暗、黎明/黄昏暖色,白天透明
     const PHASE_TINT = {

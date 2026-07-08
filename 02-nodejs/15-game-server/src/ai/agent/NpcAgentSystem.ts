@@ -15,13 +15,20 @@ import { formatUnlocks, trustOf, unlockedFor } from './relation';
 import { timeLabel } from './schedule';
 import { Reputation } from './reputation';
 import { SquadSystem } from './squad';
+import { EscortGuideSystem } from './escort';
 
 export class NpcAgentSystem {
   private readonly squad: SquadSystem;
+  private readonly escortGuide: EscortGuideSystem;
   private lastReputationAt = 0;
 
   constructor(private readonly world: GameWorld) {
     this.squad = new SquadSystem(world);
+    this.escortGuide = new EscortGuideSystem(world);
+  }
+
+  get escort(): EscortGuideSystem {
+    return this.escortGuide;
   }
 
   tick(dt: number): void {
@@ -46,6 +53,9 @@ export class NpcAgentSystem {
 
     // 多 Agent 协作:小队编排(功能9)
     this.squad.update(now);
+
+    // A2A 带路/护送编排(功能10)
+    this.escortGuide.tick(now);
   }
 
   handleNpcInfo(player: Player, enemyId: number): void {
@@ -82,6 +92,8 @@ export class NpcAgentSystem {
       archives: enemy.llmArchives.slice(-3),
       rumors: RumorBoard.forZone(this.world, enemy.zoneId, now),
       following: enemy.followPlayerId === player.id,
+      a2aRole: enemy.a2aRole,
+      a2aMission: this.escortGuide.missionSnapshot(enemy),
       timeOfDay: timeLabel(this.world.dayPhase),
       playerTag: this.world.playerTags.get(player.name)?.tag ?? '旅人',
       squadRole: enemy.squadRole,
@@ -93,6 +105,7 @@ export class NpcAgentSystem {
       NpcMood.onFriendlyChat(enemy);
     }
     NpcQuests.tryIssueFromChat(this.world, enemy, player, text, now);
+    this.escortGuide.tryFromChat(enemy, player, text, now);
   }
 
   static trustPartnerHunt(enemy: Enemy, playerName: string): boolean {

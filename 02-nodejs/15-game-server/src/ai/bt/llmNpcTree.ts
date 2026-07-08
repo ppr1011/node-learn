@@ -31,6 +31,14 @@ import {
   seekMob,
   shouldReturnHome,
   returnHome,
+  shouldGuide,
+  guideToNpc,
+  shouldEscort,
+  isEscortSeek,
+  escortSeek,
+  escortLead,
+  shouldFollowNpc,
+  followNpc,
 } from './llmActions';
 
 /** LLM NPC 专用树 */
@@ -57,10 +65,18 @@ export function buildLlmNpcTree(kind: EnemyKind): BTNode {
     act('followPlayer', followPlayer)
   );
 
+  const escortSubtree = sel(
+    seq(cond('escortSeek', isEscortSeek), act('escortSeek', escortSeek)),
+    act('escortLead', escortLead)
+  );
+
   return sel(
     seq(cond('llmFlee', (c) => hasLlmDirective(c) && llmWantsFlee(c)),
         cond('acquireTarget', acquireTarget),
         act('flee', flee)),
+    seq(cond('shouldFollowNpc', shouldFollowNpc), act('followNpc', followNpc)),
+    seq(cond('shouldGuide', shouldGuide), act('guideToNpc', guideToNpc)),
+    seq(cond('shouldEscort', shouldEscort), escortSubtree),
     seq(cond('shouldFollow', shouldFollow), followSubtree),
     seq(cond('returnHome', shouldReturnHome), act('returnHome', returnHome)),
     seq(cond('shouldHunt', shouldHuntMob), mobCombat),
