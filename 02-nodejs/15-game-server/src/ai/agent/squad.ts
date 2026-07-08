@@ -45,8 +45,9 @@ export class SquadSystem {
     const byMob = new Map<number, Enemy[]>();
     for (const enemy of world.enemies.values()) {
       if (!enemy.llmEnabled || enemy.isDead) continue;
-      // 逃跑 / 回巢 / 未处于清怪态的,不参与组队
+      // 逃跑 / 回巢 / 未被委托狩猎的,不参与组队
       if (enemy.llmDirective?.intent === 'flee') { this.clear(enemy); continue; }
+      if (enemy.huntForPlayerId === null) { this.clear(enemy); continue; }
       const mob = nearestMob(enemy, world);
       if (!mob) { this.clear(enemy); continue; }
       const arr = byMob.get(mob.id) ?? [];

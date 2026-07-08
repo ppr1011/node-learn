@@ -20,6 +20,7 @@ import { Reputation } from '../agent/reputation';
 import { squadSnapshot } from '../agent/squad';
 import { nearbyNpcs } from '../agent/a2a';
 import { NpcCapabilities } from '../agent/capabilities';
+import { canNpcAttackPlayer } from '../agent/relation';
 
 const FOLLOW_CHAT = /跟着我|跟随|follow|一起走|跟我走|跟上/;
 const UNFOLLOW_CHAT = /别跟|不用跟|留下|自己巡逻|在这等|不用管我/;
@@ -151,6 +152,8 @@ export class LLMBrain {
     this.provider
       .decide(snapshot)
       .then((directive) => {
+        this.applyNeutralGuard(enemy, directive, snapshot);
+        this.applyHuntGuard(enemy, directive);
         this.applyFollowState(world, enemy, directive, snapshot, now);
         this.applyA2aState(enemy, directive, snapshot);
         if (snapshot.chatText) {
@@ -242,6 +245,40 @@ export class LLMBrain {
     if (/[，。！？…,!?]/.test(reason)) return true;
     if (/已答应|已承诺|义士|守夜|奉陪|好的/.test(reason)) return true;
     return reason.length >= 6;
+  }
+
+  /** 默认中立:无挑衅时不攻击玩家 */
+  private applyNeutralGuard(
+    enemy: Enemy,
+    directive: LLMDirective,
+    snapshot: LLMGameSnapshot
+  ): void {
+    if (directive.intent !== 'attack') return;
+
+    const chatFrom = snapshot.chatFrom;
+    const chatText = snapshot.chatText;
+
+    if (chatFrom && canNpcAttackPlayer(enemy, chatFrom, chatText)) return;
+
+    // 周期刷新:只有曾被玩家打过才允许 attack
+    const anyHostile = Object.entries(enemy.llmRelations).some(
+      ([name, r]) => canNpcAttackPlayer(enemy, name)
+    );
+    if (anyHostile) return;
+
+    directive.intent = chatText ? 'taunt' : 'patrol';
+    if (chatText && chatFrom) {
+      directive.speech = `${chatFrom},我是中立的,没有恶意。有事可以聊。`;
+    }
+    directive.reason = (directive.reason ?? '') + ';中立拒战';
+  }
+
+  /** 无玩家委托时不主动狩猎 */
+  private applyHuntGuard(enemy: Enemy, directive: LLMDirective): void {
+    if (directive.intent !== 'hunt') return;
+    if (enemy.huntForPlayerId !== null) return;
+    directive.intent = 'patrol';
+    directive.reason = (directive.reason ?? '') + ';未委托不狩猎';
   }
 
   /** 跟随是持久状态:仅 follow 意图或解除聊天可改;周期 patrol 不覆盖 */

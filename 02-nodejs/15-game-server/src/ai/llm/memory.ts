@@ -123,7 +123,8 @@ export class NpcMemory {
       this.bumpTrust(enemy, playerName, 12, now);
       this.add(enemy, 'bond', `答应跟随${playerName}`, now, playerName);
     }
-    if (/打|杀|攻击|滚|揍/.test(text)) {
+    // 仅匹配明确挑衅,避免「帮我去打」误触
+    if (/打你|杀你|攻击你|揍你|弄死你|滚开|去死|敢打|挑衅|开战/.test(text)) {
       this.bumpTrust(enemy, playerName, -15, now);
     }
   }

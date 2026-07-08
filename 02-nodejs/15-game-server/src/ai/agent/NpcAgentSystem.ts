@@ -17,6 +17,7 @@ import { Reputation } from './reputation';
 import { SquadSystem } from './squad';
 import { EscortGuideSystem } from './escort';
 import { NpcCapabilities } from './capabilities';
+import { NpcDialogue } from './npcDialogue';
 
 export class NpcAgentSystem {
   private readonly squad: SquadSystem;
@@ -106,8 +107,8 @@ export class NpcAgentSystem {
     if (/你好|谢谢|辛苦|棒|厉害/.test(text)) {
       NpcMood.onFriendlyChat(enemy);
     }
-    // 能力问询已有完整回复,跳过后续 LLM 避免重复发言
-    if (NpcCapabilities.tryRespondFromChat(this.world, enemy, player, text)) return true;
+    // 事实问答优先:准确回复可核实问题,跳过 LLM 避免瞎编
+    if (NpcDialogue.tryAnswerFromChat(this.world, enemy, player, text, now)) return true;
     NpcQuests.tryIssueFromChat(this.world, enemy, player, text, now);
     this.escortGuide.tryFromChat(enemy, player, text, now);
     return false;

@@ -131,13 +131,16 @@ const SYSTEM_PROMPT = [
   '无玩家对话时通常省略 speech(仅 taunt/打招呼才说话),尽量精简输出。',
   '示例(有对话):{"intent":"taunt","speech":"守夜人,听个睡前故事吧","reason":"讲笑话"}',
   '示例(无对话):{"intent":"patrol","reason":"无威胁"}',
-  '规则:高信任友善;曾承诺不攻击勿 attack;残血 flee;邀请跟随用 follow;附近怪 hunt。',
-  '玩家委托清怪(帮我去打/你去打)用 hunt;有进行中委托时优先击杀委托目标种类;',
+  '规则:默认中立,勿主动 attack 玩家;仅当玩家先攻击你或聊天明确挑衅(打你/杀你)才 attack;',
+  '高信任友善;曾承诺不攻击勿 attack;残血 flee;邀请跟随用 follow;',
+  '勿主动 hunt 清怪;仅玩家明确说「帮我去打/你去打/清怪」且已设置委托狩猎时才 hunt;',
   '玩家名后 [英雄]/[屠夫] 为全局声望,据此定初见语气;夜晚倾向回巢少战;',
   '小队分工:striker 强攻 / flanker 包抄 / bait 引怪,台词体现协作。',
   'A2A协作:玩家说「带我去找XX」用 guide;「把XX带过来」用 escort;被护送方跟随用 follow_npc。',
   '重要:快照中的「我能」字段列出你当前可用能力及触发方式;玩家问能做什么时,用 speech 自然介绍这些能力,勿编造未列出的功能。',
+  '回答事实性问题(区域/委托/传闻/信任)时,严格依据快照字段,不确定就说不知道,勿编造。',
   '有进行中委托时,优先在 speech 中提及委托进度并鼓励玩家;接委托用 taunt 而非 hunt(除非玩家明确要求代打)。',
+  '委托仅对朋友开放(信任≥30);陌生人请求委托时 speech 说明需先增进信任。',
 ].join('\n');
 
 /**
@@ -340,15 +343,6 @@ export class MockLLMProvider implements LLMProvider {
       };
     }
 
-    if (snapshot.nearbyMobCount > 0 && hpRatio > 0.4) {
-      return {
-        intent: 'hunt',
-        speech: '发现怪物,我来清理!',
-        reason: '附近刷怪(Mock)',
-        decidedAt: now,
-      };
-    }
-
     if (snapshot.isFollowing) {
       return {
         intent: 'follow',
@@ -409,25 +403,37 @@ export class MockLLMProvider implements LLMProvider {
           decidedAt: now,
         };
       }
-      if (/有任务|任务吗|委托|接任务|有什么活/.test(text)) {
-        const questHint = snapshot.activeQuest
-          ? `,${snapshot.activeQuest}`
-          : ',说「有任务吗」就能接';
-        return {
-          intent: 'taunt',
-          speech: snapshot.activeQuest
-            ? `委托还在进行${questHint},加油!`
-            : `有啊${questHint},要我帮你清怪就说「帮我去打」。`,
-          reason: '玩家询问委托(Mock)',
-          decidedAt: now,
-        };
-      }
-      if (/能做什么|你会什么|你能帮|help|怎么委托/.test(text)) {
+      if (/能做什么|你会什么|你能帮|help|怎么委托|你是谁|这是哪|传闻|委托进度|信任|天气|几点/.test(text)) {
         const caps = snapshot.capabilities ?? '发布委托、跟随、清怪';
+        const zone = snapshot.zoneName ?? '这片区域';
+        if (/你是谁/.test(text)) {
+          return {
+            intent: 'taunt',
+            speech: `我是${snapshot.npcName},${snapshot.personality}。`,
+            reason: '自我介绍(Mock)',
+            decidedAt: now,
+          };
+        }
+        if (/这是哪|什么区域/.test(text)) {
+          return {
+            intent: 'taunt',
+            speech: `这里是${zone}。`,
+            reason: '介绍区域(Mock)',
+            decidedAt: now,
+          };
+        }
+        if (/委托|任务进度/.test(text) && snapshot.activeQuest) {
+          return {
+            intent: 'taunt',
+            speech: `委托:${snapshot.activeQuest}`,
+            reason: '委托进度(Mock)',
+            decidedAt: now,
+          };
+        }
         return {
           intent: 'taunt',
-          speech: `${snapshot.chatFrom},我可以:${caps.slice(0, 50)}……`,
-          reason: '介绍能力(Mock)',
+          speech: `${snapshot.chatFrom},${caps.slice(0, 60)}`,
+          reason: '事实问答(Mock)',
           decidedAt: now,
         };
       }
@@ -442,36 +448,40 @@ export class MockLLMProvider implements LLMProvider {
           decidedAt: now,
         };
       }
-      if (/打|杀|攻击|fight|滚/.test(text)) {
+      if (/有任务|任务吗|委托|接任务|有什么活/.test(text)) {
+        const questHint = snapshot.activeQuest
+          ? `,${snapshot.activeQuest}`
+          : ',说「有任务吗」就能接';
+        return {
+          intent: 'taunt',
+          speech: snapshot.activeQuest
+            ? `委托还在进行${questHint},加油!`
+            : `有啊${questHint},要我帮你清怪就说「帮我去打」。`,
+          reason: '玩家询问委托(Mock)',
+          decidedAt: now,
+        };
+      }
+      if (/打你|杀你|攻击你|揍你|滚开|去死|挑衅/.test(text)) {
         return {
           intent: 'attack',
           speech: '想动手?奉陪!',
-          reason: '挑衅(Mock)',
+          reason: '玩家挑衅(Mock)',
           decidedAt: now,
         };
       }
       return {
         intent: 'taunt',
-        speech: `嗯?${snapshot.chatFrom}刚才说了什么……`,
+        speech: `${snapshot.chatFrom},有事尽管说,我是中立的。`,
         reason: '闲聊(Mock)',
         decidedAt: now,
       };
     }
 
-    if (nearest && nearest.distance < 120 && hpRatio > 0.5) {
-      return {
-        intent: 'attack',
-        speech: '别靠太近!',
-        reason: '玩家进入威胁距离(Mock)',
-        decidedAt: now,
-      };
-    }
-
+    // 默认中立:靠近玩家也不攻击,最多巡逻
     if (nearest && nearest.distance < 280) {
       return {
-        intent: 'taunt',
-        speech: nearest.name + ',这片区域可不是闹着玩的。',
-        reason: '警戒嘲讽(Mock)',
+        intent: 'patrol',
+        reason: '中立巡逻(Mock)',
         decidedAt: now,
       };
     }

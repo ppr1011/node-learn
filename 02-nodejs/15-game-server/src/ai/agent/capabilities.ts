@@ -6,7 +6,7 @@ import { Enemy } from '../../core/Enemy';
 import { Player } from '../../core/Player';
 import { GameWorld } from '../../core/GameWorld';
 import { MsgType } from '../../network/Protocol';
-import { trustOf, unlockedFor } from './relation';
+import { trustOf, unlockedFor, isNpcFriend, QUEST_FRIEND_TRUST } from './relation';
 import { NpcQuests } from './quest';
 import { timeLabel } from './schedule';
 
@@ -44,8 +44,12 @@ export class NpcCapabilities {
         id: 'quest',
         label: activeQuest ? `继续委托「${activeQuest.title}」` : '发布清怪委托',
         hint: activeQuest ? '说「委托进度」查看' : '说「有任务吗」或「委托」',
-        available: !night,
-        reason: night ? '夜晚我不接新委托,天亮再来' : undefined,
+        available: !night && (activeQuest !== null || isNpcFriend(enemy, playerName)),
+        reason: night
+          ? '夜晚我不接新委托,天亮再来'
+          : !isNpcFriend(enemy, playerName)
+            ? `还不是朋友(信任需≥${QUEST_FRIEND_TRUST})`
+            : undefined,
       },
       {
         id: 'hunt',
@@ -85,10 +89,12 @@ export class NpcCapabilities {
     if (hasPartner) {
       caps.push({
         id: 'assist',
-        label: '主动协助你战斗',
-        hint: '靠近我即可,高信任时我会顺路清怪',
-        available: !night,
-        reason: night ? '夜晚我守巢不出' : undefined,
+        label: '受委托时协助清怪',
+        hint: '说「帮我去打」,我才会出手',
+        available: !night && isNpcFriend(enemy, playerName),
+        reason: !isNpcFriend(enemy, playerName)
+          ? `还不是朋友(信任需≥${QUEST_FRIEND_TRUST})`
+          : night ? '夜晚我守巢不出' : undefined,
       });
     }
 

@@ -4,13 +4,13 @@
 
 import { BTContext, NodeStatus } from './types';
 import { LLMIntent } from '../llm/types';
-import { NpcAgentSystem } from '../agent/NpcAgentSystem';
 import { NpcSchedule } from '../agent/schedule';
 import { GameConfig } from '../../config';
 import { MsgType } from '../../network/Protocol';
 import { Enemy, EnemyKind } from '../../core/Enemy';
 import { NpcMemory } from '../llm/memory';
 import { NpcQuests } from '../agent/quest';
+import { canNpcAttackPlayer } from '../agent/relation';
 import {
   acquireTarget,
   inAttackRange,
@@ -187,6 +187,7 @@ export function acquireMobTargetSeek(ctx: BTContext): boolean {
 export function shouldSeekMob(ctx: BTContext): boolean {
   const { enemy } = ctx;
   if (!enemy.llmEnabled || llmWantsFlee(ctx)) return false;
+  if (enemy.huntForPlayerId === null) return false;
   if (!llmWantsHunt(ctx) && enemy.huntMobKind === null) return false;
   if (acquireMobTarget(ctx)) return false;
   return acquireMobTargetSeek(ctx);
@@ -331,48 +332,31 @@ export function taunt(ctx: BTContext): NodeStatus {
   return 'success';
 }
 
-/** 信任足够高时拒绝攻击(记忆驱动) */
+/** 默认中立:仅 LLM 意图为 attack 且附近存在可攻击(已结仇/被挑衅)的玩家 */
 export function shouldAttackPlayer(ctx: BTContext): boolean {
   if (!hasLlmDirective(ctx) || !llmWantsAttack(ctx)) return false;
   const { enemy, world } = ctx;
+  const chatText = enemy.llmChatPending?.text;
+
   for (const p of world.players.values()) {
     if (p.isDead) continue;
     const d = dist(enemy.position.x, enemy.position.y, p.position.x, p.position.y);
     if (d > enemy.detectionRange * 1.2) continue;
-    const rel = enemy.llmRelations[p.name];
-    if (!rel) continue;
-    if (rel.trust >= 25 && /承诺不攻击|挚友|友善/.test(rel.label)) return false;
-    if (rel.trust >= 50) return false;
+    if (canNpcAttackPlayer(enemy, p.name, chatText)) return true;
   }
-  return true;
+  return false;
 }
 
-/** 应主动狩猎:显式 hunt / 委托清怪 / 跟随途中顺路清怪 / 巡逻时附近刷怪 */
+/** 应狩猎:仅在被玩家委托清怪时才打怪(说「帮我去打」等) */
 export function shouldHuntMob(ctx: BTContext): boolean {
   if (!ctx.enemy.llmEnabled) return false;
   if (llmWantsFlee(ctx)) return false;
   if (ctx.enemy.a2aRole === 'guide' || ctx.enemy.a2aRole === 'escort') return false;
   if (ctx.enemy.followNpcId !== null) return false;
-  if (llmWantsHunt(ctx) || ctx.enemy.huntMobKind !== null) {
-    return true;
-  }
-  if (ctx.enemy.followPlayerId !== null) {
-    return acquireMobTarget(ctx);
-  }
-  // 夜晚回巢休整:不主动清怪(跟随 / 显式 hunt 已在上面放行)
+  // 核心:无玩家委托时不主动打怪
+  if (ctx.enemy.huntForPlayerId === null) return false;
   if (!NpcSchedule.biasFor(ctx.world.dayPhase).huntAllowed) return false;
-  for (const p of ctx.world.players.values()) {
-    if (p.isDead) continue;
-    if (NpcAgentSystem.trustPartnerHunt(ctx.enemy, p.name)) {
-      const d = dist(ctx.enemy.position.x, ctx.enemy.position.y, p.position.x, p.position.y);
-      if (d <= ctx.enemy.detectionRange * 2) return acquireMobTarget(ctx);
-    }
-  }
-  const i = intent(ctx);
-  if (i === 'patrol' || i === 'taunt' || i === null) {
-    return acquireMobTarget(ctx);
-  }
-  return false;
+  return llmWantsHunt(ctx) || ctx.enemy.huntMobKind !== null || intent(ctx) === 'hunt';
 }
 
 /** 是否处于带路模式 */

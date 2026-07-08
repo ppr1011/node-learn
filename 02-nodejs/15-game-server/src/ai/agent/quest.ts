@@ -10,7 +10,7 @@ import { MsgType } from '../../network/Protocol';
 import { ZONES, zoneAt } from '../../core/Zone';
 import { NpcMemory } from '../llm/memory';
 import { RumorBoard } from './rumor';
-import { questXpMultiplier, onQuestComplete, trustOf } from './relation';
+import { questXpMultiplier, onQuestComplete, trustOf, isNpcFriend, QUEST_FRIEND_TRUST } from './relation';
 import { NpcMood } from './mood';
 import { NpcCapabilities } from './capabilities';
 
@@ -139,6 +139,17 @@ export class NpcQuests {
     // 夜晚不接新委托
     if (world.dayPhase === 'night') {
       this.speak(world, enemy, `${player.name},夜晚我不接委托,天亮再来吧。`);
+      return true;
+    }
+
+    // 只有朋友(信任≥30)才能接新委托
+    const trust = trustOf(enemy, player.name);
+    if (!isNpcFriend(enemy, player.name)) {
+      this.speak(
+        world,
+        enemy,
+        `${player.name},我们还不太熟(信任${trust}/${QUEST_FRIEND_TRUST})。多聊聊、帮帮忙,成为朋友后再给你委托。`
+      );
       return true;
     }
 

@@ -18,8 +18,35 @@ export const TRUST_UNLOCKS: TrustUnlock[] = [
   { trust: 90, id: 'bond', title: '羁绊', perk: '委托经验×2,额外信任奖励' },
 ];
 
+/** 接委托所需的最低信任(≥30 视为朋友/熟识) */
+export const QUEST_FRIEND_TRUST = 30;
+
 export function trustOf(enemy: Enemy, playerName: string): number {
   return enemy.llmRelations[playerName]?.trust ?? 0;
+}
+
+/** 是否已是朋友(可接委托) */
+export function isNpcFriend(enemy: Enemy, playerName: string): boolean {
+  return trustOf(enemy, playerName) >= QUEST_FRIEND_TRUST;
+}
+
+/** NPC 是否允许攻击该玩家:默认中立,仅被挑衅或已结仇时才反击 */
+export function canNpcAttackPlayer(
+  enemy: Enemy,
+  playerName: string,
+  chatText?: string
+): boolean {
+  const rel = enemy.llmRelations[playerName];
+  if (!rel) return false; // 陌生人:不主动攻击
+
+  if (rel.hits > 0) return true;           // 玩家先动手
+  if (rel.trust <= -20) return true;       // 关系敌对
+  if (/袭击者|仇人|敌对/.test(rel.label)) return true;
+
+  if (chatText && /打你|杀你|攻击你|揍你|弄死你|去死|滚开|敢打|挑衅|开战/i.test(chatText)) {
+    return true;
+  }
+  return false;
 }
 
 export function unlockedFor(enemy: Enemy, playerName: string): TrustUnlock[] {
