@@ -101,49 +101,66 @@ export class LLMBrain {
   }
 
   onPlayerChat(world: GameWorld, player: Player, text: string, now: number): void {
+    const target = this.resolveChatTarget(world, player, text);
+    if (!target) return;
+
+    const enemy = target;
+    enemy.llmChatPending = { from: player.name, text, at: now };
+    Reputation.seedFirstContact(world, enemy, player.name, now);
+    NpcMemory.onPlayerChat(enemy, player.name, text, now);
+    const syncHandled = world.npcAgent.onPlayerChat(enemy, player, text, now);
+
+    if (FOLLOW_CHAT.test(text)) {
+      enemy.followPlayerId = player.id;
+      enemy.llmDirective = { intent: 'follow', decidedAt: now, reason: '玩家邀请跟随' };
+      NpcMemory.onFollowStart(enemy, player.name, now);
+    } else if (UNFOLLOW_CHAT.test(text)) {
+      enemy.followPlayerId = null;
+      enemy.llmDirective = { intent: 'patrol', decidedAt: now, reason: '玩家解除跟随' };
+    } else if (STOP_HUNT_CHAT.test(text)) {
+      enemy.huntMobKind = null;
+      enemy.huntForPlayerId = null;
+      enemy.llmDirective = { intent: 'patrol', decidedAt: now, reason: '玩家取消狩猎' };
+    } else if (HUNT_CHAT.test(text)) {
+      const quest = NpcQuests.activeFor(enemy, player.name);
+      enemy.followPlayerId = null;
+      enemy.huntForPlayerId = player.id;
+      enemy.huntMobKind = quest?.mobKind ?? null;
+      enemy.llmDirective = { intent: 'hunt', decidedAt: now, reason: '玩家委托狩猎' };
+    }
+    if (SPEED_UP_CHAT.test(text) && enemy.followPlayerId === player.id) {
+      enemy.followBoostTimer = 6;
+    }
+
+    if (syncHandled) {
+      enemy.llmChatPending = null;
+      return;
+    }
+
+    if (!this.pending.has(enemy.id)) {
+      this.requestDecision(world, enemy, now);
+    }
+  }
+
+  /** 聊天只路由给一只 NPC:优先消息里点名的,否则取最近的 */
+  private resolveChatTarget(world: GameWorld, player: Player, text: string): Enemy | null {
+    const inRange: Array<{ enemy: Enemy; d: number }> = [];
     for (const enemy of world.enemies.values()) {
       if (!enemy.llmEnabled || enemy.isDead) continue;
       const d = dist(enemy.position.x, enemy.position.y, player.position.x, player.position.y);
-      if (d > enemy.detectionRange * 1.2) continue;
-
-      enemy.llmChatPending = { from: player.name, text, at: now };
-      // 初见即有态度:该 NPC 没接触过此玩家时,按全局声望播下初始信任(功能8)
-      Reputation.seedFirstContact(world, enemy, player.name, now);
-      NpcMemory.onPlayerChat(enemy, player.name, text, now);
-      const syncHandled = world.npcAgent.onPlayerChat(enemy, player, text, now);
-
-      if (FOLLOW_CHAT.test(text)) {
-        enemy.followPlayerId = player.id;
-        enemy.llmDirective = { intent: 'follow', decidedAt: now, reason: '玩家邀请跟随' };
-        NpcMemory.onFollowStart(enemy, player.name, now);
-      } else if (UNFOLLOW_CHAT.test(text)) {
-        enemy.followPlayerId = null;
-        enemy.llmDirective = { intent: 'patrol', decidedAt: now, reason: '玩家解除跟随' };
-      } else if (STOP_HUNT_CHAT.test(text)) {
-        enemy.huntMobKind = null;
-        enemy.huntForPlayerId = null;
-        enemy.llmDirective = { intent: 'patrol', decidedAt: now, reason: '玩家取消狩猎' };
-      } else if (HUNT_CHAT.test(text)) {
-        const quest = NpcQuests.activeFor(enemy, player.name);
-        enemy.followPlayerId = null;
-        enemy.huntForPlayerId = player.id;
-        enemy.huntMobKind = quest?.mobKind ?? null;
-        enemy.llmDirective = { intent: 'hunt', decidedAt: now, reason: '玩家委托狩猎' };
-      }
-      if (SPEED_UP_CHAT.test(text) && enemy.followPlayerId === player.id) {
-        enemy.followBoostTimer = 6;
-      }
-
-      if (syncHandled) {
-        enemy.llmChatPending = null;
-        continue;
-      }
-
-      if (!this.pending.has(enemy.id)) {
-        this.requestDecision(world, enemy, now);
-      }
-      // 若 LLM 仍在处理,llmChatPending 保留;完成后 finally 会续处理新消息
+      if (d <= enemy.detectionRange * 1.2) inRange.push({ enemy, d });
     }
+    if (inRange.length === 0) return null;
+
+    for (const { enemy } of inRange) {
+      const name = enemy.displayName ?? '';
+      if (name && text.includes(name)) return enemy;
+      const short = name.split(/[·•]/).pop()?.trim();
+      if (short && short.length >= 2 && text.includes(short)) return enemy;
+    }
+
+    inRange.sort((a, b) => a.d - b.d);
+    return inRange[0]!.enemy;
   }
 
   private requestDecision(world: GameWorld, enemy: Enemy, now: number): void {

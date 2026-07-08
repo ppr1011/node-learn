@@ -52,6 +52,46 @@ function readStrField(json: string, key: string): string | undefined {
   return undefined;
 }
 
+function normalizeIntent(value: unknown): LLMIntent | null {
+  if (typeof value !== 'string') return null;
+  const v = value.trim().toLowerCase() as LLMIntent;
+  return VALID_INTENTS.includes(v) ? v : null;
+}
+
+/** 小模型常输出中文 intent,映射到白名单;有 speech 时兜底 taunt */
+function resolveIntent(rawIntent: unknown, hasSpeech: boolean): LLMIntent | null {
+  const direct = normalizeIntent(rawIntent);
+  if (direct) return direct;
+  if (typeof rawIntent !== 'string') return hasSpeech ? 'taunt' : null;
+  const s = rawIntent.trim().toLowerCase();
+  if (/attack|攻击|开打|战斗/.test(s)) return 'attack';
+  if (/flee|逃跑|撤退|撤/.test(s)) return 'flee';
+  if (/patrol|巡逻|游荡/.test(s)) return 'patrol';
+  if (/hunt|狩猎|清怪|打怪/.test(s)) return 'hunt';
+  if (/follow_npc|跟npc|跟随npc/.test(s)) return 'follow_npc';
+  if (/follow|跟随|跟走/.test(s)) return 'follow';
+  if (/guide|带路|引路/.test(s)) return 'guide';
+  if (/escort|护送/.test(s)) return 'escort';
+  if (/taunt|闲聊|对话|询问|回复|回应|聊天|招呼|问候|介绍|identity|chat|talk|问/.test(s)) {
+    return 'taunt';
+  }
+  return hasSpeech ? 'taunt' : null;
+}
+
+function buildDirective(
+  intent: LLMIntent,
+  speech: string | undefined,
+  reason: string | undefined,
+  now: number
+): LLMDirective {
+  return {
+    intent,
+    speech: speech?.slice(0, 120),
+    reason: reason?.slice(0, 200),
+    decidedAt: now,
+  };
+}
+
 function parseDirective(raw: string, now: number): LLMDirective | null {
   if (!raw.trim()) return null;
 
@@ -60,35 +100,25 @@ function parseDirective(raw: string, now: number): LLMDirective | null {
     json = repairJsonText(json);
     try {
       const parsed = JSON.parse(json) as { intent?: string; speech?: string; reason?: string };
-      const intent = normalizeIntent(parsed.intent);
+      const speech = typeof parsed.speech === 'string' ? parsed.speech : undefined;
+      const intent = resolveIntent(parsed.intent, !!speech);
       if (!intent) continue;
-      return {
-        intent,
-        speech: typeof parsed.speech === 'string' ? parsed.speech.slice(0, 120) : undefined,
-        reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 200) : undefined,
-        decidedAt: now,
-      };
+      return buildDirective(intent, speech, parsed.reason, now);
     } catch {
       // 继续尝试正则兜底(应对 token 截断)
     }
 
-    const intent = normalizeIntent(readStrField(json, 'intent'));
+    const speech = readStrField(json, 'speech');
+    const rawIntent = readStrField(json, 'intent');
+    const intent = resolveIntent(rawIntent, !!speech);
     if (intent) {
-      return {
-        intent,
-        speech: readStrField(json, 'speech'),
-        reason: readStrField(json, 'reason'),
-        decidedAt: now,
-      };
+      return buildDirective(intent, speech, readStrField(json, 'reason'), now);
+    }
+    if (speech) {
+      return buildDirective('taunt', speech, readStrField(json, 'reason'), now);
     }
   }
   return null;
-}
-
-function normalizeIntent(value: unknown): LLMIntent | null {
-  if (typeof value !== 'string') return null;
-  const v = value.trim().toLowerCase() as LLMIntent;
-  return VALID_INTENTS.includes(v) ? v : null;
 }
 
 /**
@@ -127,7 +157,7 @@ function extractMessageContent(body: Record<string, unknown>): string {
 // 系统提示为常量(每次请求相同),避免重复拼接;DeepSeek 对稳定前缀可命中上下文缓存
 const SYSTEM_PROMPT = [
   '你是 MMO 游戏里的一名 NPC Agent。只输出一个 JSON 对象,禁止 markdown 与解释文字。',
-  '必填 intent: attack flee patrol taunt hunt follow guide escort follow_npc(小写)。可选 speech(中文≤30字) reason(≤20字)。',
+  '必填 intent: attack flee patrol taunt hunt follow guide escort follow_npc(小写英文,禁止中文intent)。可选 speech(中文≤30字) reason(≤20字)。',
   '玩家发起对话时 speech 必填(对玩家说的台词);reason 仅填内部备注(如"无威胁"),勿把台词写在 reason。',
   '玩家说话时 speech 必须回应其具体内容(引用关键词),禁止说「刚才说了什么」「没听清」等推脱。',
   '无玩家对话时通常省略 speech(仅 taunt/打招呼才说话),尽量精简输出。',
@@ -144,6 +174,7 @@ const SYSTEM_PROMPT = [
   '有进行中委托时,优先在 speech 中提及委托进度并鼓励玩家;接委托用 taunt 而非 hunt(除非玩家明确要求代打)。',
   '委托仅对朋友开放(信任≥30);陌生人请求委托时 speech 说明需先增进信任。',
   '玩家问模型/AI/你是谁:快照 llmBackend 为当前决策模型(如 local:qwen3.5:9b),speech 如实说明;同时保持 NPC 人设。',
+  '保持快照 personality 语气,默认中立友善;有 speech 时 intent 用 taunt(闲聊/问答均用 taunt)。',
 ].join('\n');
 
 /**
@@ -284,6 +315,22 @@ export class OllamaProvider implements LLMProvider {
 
   constructor(private readonly opts: OllamaProviderOptions) {}
 
+  private fallback(snapshot: LLMGameSnapshot, now: number, reason: string): Promise<LLMDirective> {
+    if (snapshot.chatText) {
+      return Promise.resolve({
+        intent: 'taunt',
+        speech: replyFromSnapshot(snapshot).slice(0, 100),
+        reason,
+        decidedAt: now,
+        via: `${this.opts.label}:contextual(回退)`,
+      });
+    }
+    return this.mockFallback.decide(snapshot).then((d) => {
+      d.via = `${this.opts.label}:mock(回退)`;
+      return d;
+    });
+  }
+
   async decide(snapshot: LLMGameSnapshot): Promise<LLMDirective> {
     const now = Date.now();
     const controller = new AbortController();
@@ -319,15 +366,13 @@ export class OllamaProvider implements LLMProvider {
         directive.via = `${this.opts.label}:${this.opts.model}`;
         return directive;
       }
-      logger.warn(`[LLM:${this.opts.label}] 解析失败,回退 Mock | content="${content.slice(0, 80)}"`);
+      logger.warn(`[LLM:${this.opts.label}] 解析失败,回退 | content="${content.slice(0, 80)}"`);
     } catch (err) {
-      logger.warn(`[LLM:${this.opts.label}] 调用失败,回退 Mock: ${(err as Error).message}`);
+      logger.warn(`[LLM:${this.opts.label}] 调用失败,回退: ${(err as Error).message}`);
     } finally {
       if (timer) clearTimeout(timer);
     }
-    const fallback = await this.mockFallback.decide(snapshot);
-    fallback.via = `${this.opts.label}:mock(回退)`;
-    return fallback;
+    return this.fallback(snapshot, now, '本地模型回退');
   }
 }
 
