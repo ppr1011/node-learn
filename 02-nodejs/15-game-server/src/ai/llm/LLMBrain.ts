@@ -19,6 +19,7 @@ import { timeLabel } from '../agent/schedule';
 import { Reputation } from '../agent/reputation';
 import { squadSnapshot } from '../agent/squad';
 import { nearbyNpcs } from '../agent/a2a';
+import { NpcCapabilities } from '../agent/capabilities';
 
 const FOLLOW_CHAT = /跟着我|跟随|follow|一起走|跟我走|跟上/;
 const UNFOLLOW_CHAT = /别跟|不用跟|留下|自己巡逻|在这等|不用管我/;
@@ -107,7 +108,7 @@ export class LLMBrain {
       // 初见即有态度:该 NPC 没接触过此玩家时,按全局声望播下初始信任(功能8)
       Reputation.seedFirstContact(world, enemy, player.name, now);
       NpcMemory.onPlayerChat(enemy, player.name, text, now);
-      world.npcAgent.onPlayerChat(enemy, player, text, now);
+      const syncHandled = world.npcAgent.onPlayerChat(enemy, player, text, now);
 
       if (FOLLOW_CHAT.test(text)) {
         enemy.followPlayerId = player.id;
@@ -129,6 +130,11 @@ export class LLMBrain {
       }
       if (SPEED_UP_CHAT.test(text) && enemy.followPlayerId === player.id) {
         enemy.followBoostTimer = 6;
+      }
+
+      if (syncHandled) {
+        enemy.llmChatPending = null;
+        continue;
       }
 
       if (!this.pending.has(enemy.id)) {
@@ -354,6 +360,9 @@ export class LLMBrain {
     const questLine = chat?.from
       ? NpcQuests.formatActive(enemy, chat.from)
       : null;
+    const capLine = chat?.from
+      ? NpcCapabilities.summarize(enemy, chat.from, world)
+      : undefined;
     return {
       npcName: enemy.displayName ?? enemy.kind,
       personality: enemy.personality ?? '谨慎的守卫',
@@ -377,6 +386,7 @@ export class LLMBrain {
       moodLabel: NpcMood.format(enemy),
       zoneRumors: RumorBoard.forZone(world, enemy.zoneId, now),
       activeQuest: questLine ?? undefined,
+      capabilities: capLine,
       timeOfDay: timeLabel(world.dayPhase),
       squad: squadSnapshot(world, enemy),
       nearbyNpcs: nearbyNpcs(world, enemy, enemy.detectionRange * 2),

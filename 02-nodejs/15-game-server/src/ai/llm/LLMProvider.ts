@@ -136,6 +136,8 @@ const SYSTEM_PROMPT = [
   '玩家名后 [英雄]/[屠夫] 为全局声望,据此定初见语气;夜晚倾向回巢少战;',
   '小队分工:striker 强攻 / flanker 包抄 / bait 引怪,台词体现协作。',
   'A2A协作:玩家说「带我去找XX」用 guide;「把XX带过来」用 escort;被护送方跟随用 follow_npc。',
+  '重要:快照中的「我能」字段列出你当前可用能力及触发方式;玩家问能做什么时,用 speech 自然介绍这些能力,勿编造未列出的功能。',
+  '有进行中委托时,优先在 speech 中提及委托进度并鼓励玩家;接委托用 taunt 而非 hunt(除非玩家明确要求代打)。',
 ].join('\n');
 
 /**
@@ -163,6 +165,7 @@ function buildUserPrompt(s: LLMGameSnapshot): string {
     squad,
     s.a2aMission ? `A2A任务:${s.a2aMission}` : '',
     s.activeQuest ? `进行中委托:${s.activeQuest}` : '',
+    s.capabilities ? `我能:${s.capabilities}` : '',
   ];
 
   // 战术刷新:精简上下文,只留 2 条近况维持连贯
@@ -403,6 +406,28 @@ export class MockLLMProvider implements LLMProvider {
           intent: 'escort',
           speech: `收到,我去请${target}过来!`,
           reason: '玩家请求护送(Mock)',
+          decidedAt: now,
+        };
+      }
+      if (/有任务|任务吗|委托|接任务|有什么活/.test(text)) {
+        const questHint = snapshot.activeQuest
+          ? `,${snapshot.activeQuest}`
+          : ',说「有任务吗」就能接';
+        return {
+          intent: 'taunt',
+          speech: snapshot.activeQuest
+            ? `委托还在进行${questHint},加油!`
+            : `有啊${questHint},要我帮你清怪就说「帮我去打」。`,
+          reason: '玩家询问委托(Mock)',
+          decidedAt: now,
+        };
+      }
+      if (/能做什么|你会什么|你能帮|help|怎么委托/.test(text)) {
+        const caps = snapshot.capabilities ?? '发布委托、跟随、清怪';
+        return {
+          intent: 'taunt',
+          speech: `${snapshot.chatFrom},我可以:${caps.slice(0, 50)}……`,
+          reason: '介绍能力(Mock)',
           decidedAt: now,
         };
       }

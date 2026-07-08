@@ -1872,6 +1872,7 @@
       const arch = (data.archives || []).map((a) => `<li>${esc(a)}</li>`).join('');
       const rumors = (data.rumors || []).map((r) => `<li>${esc(r)}</li>`).join('') || '<li>暂无传闻</li>';
       const unlocks = (data.unlocks || []).map((u) => `<li>${esc(u)}</li>`).join('');
+      const caps = (data.capabilities || []).map((c) => `<li>${esc(c)}</li>`).join('');
       const squadRoleLabel = data.squadRole && SQUAD_ROLE[data.squadRole] ? SQUAD_ROLE[data.squadRole].label : null;
       const a2aRoleLabel = data.a2aRole && A2A_ROLE[data.a2aRole] ? A2A_ROLE[data.a2aRole].label : null;
       body.innerHTML = `
@@ -1884,6 +1885,7 @@
         ${a2aRoleLabel ? `<div class="row"><b>A2A协作</b> ${esc(a2aRoleLabel)}${data.a2aMission ? ' · ' + esc(data.a2aMission) : ''}</div>` : ''}
         <div class="row"><b>跟随中</b> ${data.following ? '是' : '否'}</div>
         ${data.quest ? `<div class="row"><b>委托</b> ${esc(data.quest)}</div>` : ''}
+        ${caps ? `<div class="row"><b>我能帮你</b><ul>${caps}</ul></div>` : ''}
         ${unlocks ? `<div class="row"><b>已解锁</b><ul>${unlocks}</ul></div>` : ''}
         <div class="row"><b>近期记忆</b><ul>${mem}</ul></div>
         ${arch ? `<div class="row"><b>人生经历</b><ul>${arch}</ul></div>` : ''}
@@ -1908,7 +1910,9 @@
         return;
       }
       hud.style.display = 'block';
-      hud.textContent = `委托 · ${data.npcName}: 击杀 ${data.mobKind} ${data.progress}/${data.target}`;
+      const title = data.title ? `${data.title}: ` : '';
+      const mob = data.mobKind || '';
+      hud.textContent = `委托 · ${data.npcName}: ${title}击杀 ${mob} ${data.progress}/${data.target}`;
     }
 
     function drawNavPath() {

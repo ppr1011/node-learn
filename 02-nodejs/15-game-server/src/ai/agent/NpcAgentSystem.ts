@@ -16,6 +16,7 @@ import { timeLabel } from './schedule';
 import { Reputation } from './reputation';
 import { SquadSystem } from './squad';
 import { EscortGuideSystem } from './escort';
+import { NpcCapabilities } from './capabilities';
 
 export class NpcAgentSystem {
   private readonly squad: SquadSystem;
@@ -87,6 +88,7 @@ export class NpcAgentSystem {
       trust: rel ? rel.trust : 0,
       relationLabel: rel?.label ?? '陌生人',
       unlocks: formatUnlocks(enemy, player.name),
+      capabilities: NpcCapabilities.formatForPanel(enemy, player.name, this.world),
       quest,
       memory: mem.recent,
       archives: enemy.llmArchives.slice(-3),
@@ -100,12 +102,15 @@ export class NpcAgentSystem {
     });
   }
 
-  onPlayerChat(enemy: Enemy, player: Player, text: string, now: number): void {
+  onPlayerChat(enemy: Enemy, player: Player, text: string, now: number): boolean {
     if (/你好|谢谢|辛苦|棒|厉害/.test(text)) {
       NpcMood.onFriendlyChat(enemy);
     }
+    // 能力问询已有完整回复,跳过后续 LLM 避免重复发言
+    if (NpcCapabilities.tryRespondFromChat(this.world, enemy, player, text)) return true;
     NpcQuests.tryIssueFromChat(this.world, enemy, player, text, now);
     this.escortGuide.tryFromChat(enemy, player, text, now);
+    return false;
   }
 
   static trustPartnerHunt(enemy: Enemy, playerName: string): boolean {
