@@ -93,7 +93,8 @@ export const GameConfig = {
   // 默认关闭;需先 `ollama pull qwen3.5:9b` 并 `ollama serve`,再置 LLM_LOCAL_ENABLED=1
   // 走 Ollama 原生 /api/chat(而非 /v1):唯有它支持 think 开关,关思考后 Qwen3 从 48s→~1s
   LLM_LOCAL_ENABLED: process.env.LLM_LOCAL_ENABLED === '1',
-  LLM_LOCAL_URL: process.env.LLM_LOCAL_URL ?? 'http://localhost:11434/api/chat',
+  // ⚠️ 用 127.0.0.1 而非 localhost:Node undici fetch 会先解析到 IPv6 ::1,而 Ollama 默认只监听 IPv4 → ECONNREFUSED
+  LLM_LOCAL_URL: process.env.LLM_LOCAL_URL ?? 'http://127.0.0.1:11434/api/chat',
   LLM_LOCAL_MODEL: process.env.LLM_LOCAL_MODEL ?? 'qwen3.5:9b',
   LLM_LOCAL_THINK: process.env.LLM_LOCAL_THINK === '1', // 默认关思考:推理模型思考会慢到分钟级且常截断
   LLM_LOCAL_MAX_TOKENS: 256,    // 关思考后答案就是一小段 JSON,256 足够(开 think 需自行调大)
