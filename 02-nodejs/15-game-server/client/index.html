@@ -1332,6 +1332,20 @@
       autoNav.pathIdx = 0;
       autoNav.targetId = null;
       if (reason) addSysMsg(reason);
+      haltPlayerMovement();
+    }
+
+    function isGameplayInputBlocked() {
+      return document.activeElement === chatInput ||
+        document.getElementById('npc-panel').classList.contains('open');
+    }
+
+    /** 进入聊天/NPC 对话等 UI 时立刻停止移动(服务端 velocity 需显式 c_stop) */
+    function haltPlayerMovement() {
+      joy.active = false;
+      joy.dx = 0;
+      joy.dy = 0;
+      if (joyThumb) joyThumb.style.transform = 'translate(0px, 0px)';
       if (ws && connected && players[myId]?._moving) {
         ws.send(JSON.stringify({ type: 'c_stop' }));
         players[myId]._moving = false;
@@ -1876,6 +1890,7 @@
         <div class="row"><b>区域传闻</b><ul>${rumors}</ul></div>`;
       panel.classList.add('open');
       scrim.classList.add('open');
+      haltPlayerMovement();
     }
 
     function closeNpcPanel() {
@@ -2053,7 +2068,7 @@
         if (e.key === 'Escape') chatInput.blur();
         return;
       }
-      if (e.key === 'Enter') { chatInput.focus(); return; }
+      if (e.key === 'Enter') { haltPlayerMovement(); chatInput.focus(); return; }
 
       keys[e.key.toLowerCase()] = true;
 
@@ -2112,6 +2127,8 @@
     document.addEventListener('keyup', e => {
       keys[e.key.toLowerCase()] = false;
     });
+
+    chatInput.addEventListener('focus', haltPlayerMovement);
 
     function setSkillPreview(skillId) {
       skillPreview = skillId;
@@ -2436,7 +2453,10 @@
 
     function sendInput() {
       if (!ws || !connected || !myId) return;
-      if (document.activeElement === chatInput) return;
+      if (isGameplayInputBlocked()) {
+        haltPlayerMovement();
+        return;
+      }
 
       const autoDir = tickAutoNav();
       if (autoDir) {

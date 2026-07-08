@@ -48,9 +48,11 @@ process.on('unhandledRejection', (reason) => {
 logger.info(`=== MMO-Lite Game Server ===`);
 logger.info(`Port: ${GameConfig.PORT} | Map: ${GameConfig.MAP_WIDTH}x${GameConfig.MAP_HEIGHT}`);
 if (GameConfig.LLM_ENABLED) {
-  const mode = GameConfig.LLM_API_KEY
-    ? `DeepSeek(${GameConfig.LLM_MODEL})`
-    : 'LLM(Mock, 请配置 .env 中的 DEEPSEEK_API_KEY)';
+  const mode = GameConfig.LLM_LOCAL_ENABLED
+    ? `LLM(Local, ${GameConfig.LLM_LOCAL_MODEL} @ Ollama)`
+    : GameConfig.LLM_API_KEY
+      ? `DeepSeek(${GameConfig.LLM_MODEL})`
+      : 'LLM(Mock, 请配置 .env 中的 DEEPSEEK_API_KEY 或 LLM_LOCAL_ENABLED=1)';
   logger.info(`AI: BehaviorTree + ${mode} | NPCs: ${GameConfig.LLM_NPC_COUNT}`);
 }
 logger.info(`Open client/index.html in browser to play`);
