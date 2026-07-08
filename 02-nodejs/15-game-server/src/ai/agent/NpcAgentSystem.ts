@@ -17,7 +17,7 @@ import { Reputation } from './reputation';
 import { SquadSystem } from './squad';
 import { EscortGuideSystem } from './escort';
 import { NpcCapabilities } from './capabilities';
-import { NpcDialogue } from './npcDialogue';
+import { NpcDialogue, hasRealLlmProvider } from './npcDialogue';
 
 export class NpcAgentSystem {
   private readonly squad: SquadSystem;
@@ -107,10 +107,14 @@ export class NpcAgentSystem {
     if (/你好|谢谢|辛苦|棒|厉害/.test(text)) {
       NpcMood.onFriendlyChat(enemy);
     }
-    // 事实问答优先:准确回复可核实问题,跳过 LLM 避免瞎编
+    // 事实问答:准确回复可核实问题
     if (NpcDialogue.tryAnswerFromChat(this.world, enemy, player, text, now)) return true;
-    NpcQuests.tryIssueFromChat(this.world, enemy, player, text, now);
-    this.escortGuide.tryFromChat(enemy, player, text, now);
+    if (NpcQuests.tryIssueFromChat(this.world, enemy, player, text, now)) return true;
+    if (this.escortGuide.tryFromChat(enemy, player, text, now)) return true;
+    // 无 LLM 时用规则引擎兜底;有本地/云端 LLM 时开放对话交给模型
+    if (!hasRealLlmProvider()) {
+      return NpcDialogue.replyContextually(this.world, enemy, player, text);
+    }
     return false;
   }
 

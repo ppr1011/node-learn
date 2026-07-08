@@ -20,6 +20,7 @@ import { Reputation } from '../agent/reputation';
 import { squadSnapshot } from '../agent/squad';
 import { nearbyNpcs } from '../agent/a2a';
 import { NpcCapabilities } from '../agent/capabilities';
+import { replyFromSnapshot, VAGUE_SPEECH, describeLlmBackend } from '../agent/npcDialogue';
 import { canNpcAttackPlayer } from '../agent/relation';
 
 const FOLLOW_CHAT = /跟着我|跟随|follow|一起走|跟我走|跟上/;
@@ -141,10 +142,12 @@ export class LLMBrain {
       if (!this.pending.has(enemy.id)) {
         this.requestDecision(world, enemy, now);
       }
+      // 若 LLM 仍在处理,llmChatPending 保留;完成后 finally 会续处理新消息
     }
   }
 
   private requestDecision(world: GameWorld, enemy: Enemy, now: number): void {
+    if (this.pending.has(enemy.id)) return;
     const snapshot = this.buildSnapshot(world, enemy);
     this.pending.add(enemy.id);
     enemy.llmLastRefresh = now;
@@ -168,9 +171,16 @@ export class LLMBrain {
           this.broadcastNpcChat(world, enemy, directive.speech);
         }
         this.logDialogue(enemy, snapshot, directive);
+        if (snapshot.chatText) enemy.llmChatPending = null;
       })
       .catch((err: Error) => {
         logger.warn(`[LLM] ${enemy.displayName ?? enemy.kind}#${enemy.id} 决策失败: ${err.message}`);
+        if (snapshot.chatText) {
+          const speech = replyFromSnapshot(snapshot);
+          NpcMemory.onNpcSpeech(enemy, snapshot.chatFrom, speech, now);
+          this.broadcastNpcChat(world, enemy, speech);
+          enemy.llmChatPending = null;
+        }
         if (enemy.followPlayerId === null && enemy.a2aRole === null && enemy.followNpcId === null) {
           enemy.llmDirective = {
             intent: 'patrol',
@@ -181,7 +191,9 @@ export class LLMBrain {
       })
       .finally(() => {
         this.pending.delete(enemy.id);
-        enemy.llmChatPending = null;
+        if (enemy.llmChatPending) {
+          this.requestDecision(world, enemy, Date.now());
+        }
       });
   }
 
@@ -201,11 +213,27 @@ export class LLMBrain {
    * 小模型(qwen3.5:4b 等)常把台词写在 reason,导致客户端收不到 CHAT_MSG。
    */
   private ensureChatSpeech(snapshot: LLMGameSnapshot, directive: LLMDirective): void {
-    if (directive.speech?.trim()) return;
+    const fallback = () => {
+      if (snapshot.chatText) directive.speech = replyFromSnapshot(snapshot).slice(0, 100);
+    };
+
+    if (directive.speech?.trim()) {
+      // 模型常输出「刚才说了什么」类推脱 → 换成有据回复
+      if (snapshot.chatText && VAGUE_SPEECH.test(directive.speech)) {
+        fallback();
+      }
+      return;
+    }
 
     const reason = directive.reason?.trim();
     if (reason && this.isPlayerFacingReason(reason)) {
       directive.speech = reason.slice(0, 100);
+      if (snapshot.chatText && VAGUE_SPEECH.test(directive.speech)) fallback();
+      return;
+    }
+
+    if (snapshot.chatText) {
+      fallback();
       return;
     }
 
@@ -221,7 +249,7 @@ export class LLMBrain {
         directive.speech = '……我得先撤了!';
         break;
       case 'hunt':
-        directive.speech = '发现怪物,我来清理!';
+        directive.speech = '好,这就去清怪!';
         break;
       case 'guide':
         directive.speech = '跟我来,我带你去找。';
@@ -232,11 +260,8 @@ export class LLMBrain {
       case 'follow_npc':
         directive.speech = '好,我跟你走。';
         break;
-      case 'taunt':
-        directive.speech = `……${who},听你吩咐。`;
-        break;
       default:
-        directive.speech = `嗯?${who},有什么事吗?`;
+        directive.speech = `……${who},听你吩咐。`;
     }
   }
 
@@ -424,6 +449,7 @@ export class LLMBrain {
       zoneRumors: RumorBoard.forZone(world, enemy.zoneId, now),
       activeQuest: questLine ?? undefined,
       capabilities: capLine,
+      llmBackend: describeLlmBackend(),
       timeOfDay: timeLabel(world.dayPhase),
       squad: squadSnapshot(world, enemy),
       nearbyNpcs: nearbyNpcs(world, enemy, enemy.detectionRange * 2),

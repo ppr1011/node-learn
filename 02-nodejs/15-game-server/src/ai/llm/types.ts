@@ -59,6 +59,8 @@ export interface LLMGameSnapshot {
   activeQuest?: string;
   /** NPC 当前对玩家的能力清单(注入 LLM,让 NPC 知道自己能做什么) */
   capabilities?: string;
+  /** 当前决策 LLM 后端(local:模型名 / cloud:模型名) */
+  llmBackend?: string;
   /** 当前昼夜时段(功能7) */
   timeOfDay: string;
   /** 小队分工(功能9):在队时注入,否则 undefined */

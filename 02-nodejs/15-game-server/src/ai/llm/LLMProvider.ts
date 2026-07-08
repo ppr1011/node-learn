@@ -5,6 +5,7 @@
 import { LLMDirective, LLMGameSnapshot, LLMIntent } from './types';
 import { GameConfig } from '../../config';
 import { logger } from '../../utils/Logger';
+import { replyFromSnapshot } from '../agent/npcDialogue';
 
 const VALID_INTENTS: LLMIntent[] = [
   'attack', 'flee', 'patrol', 'taunt', 'hunt', 'follow',
@@ -128,6 +129,7 @@ const SYSTEM_PROMPT = [
   '你是 MMO 游戏里的一名 NPC Agent。只输出一个 JSON 对象,禁止 markdown 与解释文字。',
   '必填 intent: attack flee patrol taunt hunt follow guide escort follow_npc(小写)。可选 speech(中文≤30字) reason(≤20字)。',
   '玩家发起对话时 speech 必填(对玩家说的台词);reason 仅填内部备注(如"无威胁"),勿把台词写在 reason。',
+  '玩家说话时 speech 必须回应其具体内容(引用关键词),禁止说「刚才说了什么」「没听清」等推脱。',
   '无玩家对话时通常省略 speech(仅 taunt/打招呼才说话),尽量精简输出。',
   '示例(有对话):{"intent":"taunt","speech":"守夜人,听个睡前故事吧","reason":"讲笑话"}',
   '示例(无对话):{"intent":"patrol","reason":"无威胁"}',
@@ -141,6 +143,7 @@ const SYSTEM_PROMPT = [
   '回答事实性问题(区域/委托/传闻/信任)时,严格依据快照字段,不确定就说不知道,勿编造。',
   '有进行中委托时,优先在 speech 中提及委托进度并鼓励玩家;接委托用 taunt 而非 hunt(除非玩家明确要求代打)。',
   '委托仅对朋友开放(信任≥30);陌生人请求委托时 speech 说明需先增进信任。',
+  '玩家问模型/AI/你是谁:快照 llmBackend 为当前决策模型(如 local:qwen3.5:9b),speech 如实说明;同时保持 NPC 人设。',
 ].join('\n');
 
 /**
@@ -169,6 +172,7 @@ function buildUserPrompt(s: LLMGameSnapshot): string {
     s.a2aMission ? `A2A任务:${s.a2aMission}` : '',
     s.activeQuest ? `进行中委托:${s.activeQuest}` : '',
     s.capabilities ? `我能:${s.capabilities}` : '',
+    s.llmBackend ? `决策模型:${s.llmBackend}` : '',
   ];
 
   // 战术刷新:精简上下文,只留 2 条近况维持连贯
@@ -187,6 +191,7 @@ function buildUserPrompt(s: LLMGameSnapshot): string {
     list('人生经历', s.memoryArchives.slice(-2)),
     list('区域传闻', s.zoneRumors.slice(-3)),
     `玩家${s.chatFrom}说:「${s.chatText}」`,
+    '请直接回应这句话的内容。',
   ].filter(Boolean).join('\n');
 }
 
@@ -471,8 +476,8 @@ export class MockLLMProvider implements LLMProvider {
       }
       return {
         intent: 'taunt',
-        speech: `${snapshot.chatFrom},有事尽管说,我是中立的。`,
-        reason: '闲聊(Mock)',
+        speech: replyFromSnapshot(snapshot).slice(0, 100),
+        reason: '上下文回复(Mock)',
         decidedAt: now,
       };
     }
