@@ -657,24 +657,54 @@
     // ─── State ────────────────────────────────────────────────
     let ws = null;
     let myId = null;
-    // 角色身份持久化:token 长期保存在 localStorage,作为跨会话的稳定角色标识;
-    // name 记住上次角色名。掉线后带 token 重连 → 服务端恢复位置/血量/装备。
+    // ─── 角色身份 & 多窗口隔离 ────────────────────────────────
+    // token 是服务端认定的稳定角色标识(name 只是显示名)。localStorage 在同源下被同一浏览器
+    // 的所有窗口共享,若多窗口共用同一 token,会被服务端判为「重复登录」而互相踢线。
     //
-    // localStorage 在同源下被同一浏览器的所有窗口/标签共享,因此默认情况下多开窗口会
-    // 共用同一个 token,被服务端判为「重复登录」而互相踢线。为支持同一浏览器多窗口各自
-    // 登录不同角色,身份存储按 slot 分桶:
-    //   · 无参数        → 使用 mmo_token(与旧行为一致)
-    //   · ?slot=2 / ?slot=alice → 独立身份,各自持久化,互不踢线
-    //   · ?token=xxx    → 直接以该 token 登录指定角色(优先级最高,不落地存储的默认桶)
+    // 策略:每个标签页自动获得独立身份,新窗口=新玩家,零配置。
+    //   · 主标签(首个打开的)→ 用 localStorage,身份可跨浏览器重启持久化(自动续存档)
+    //   · 其后打开的副标签   → 用各自 sessionStorage,随标签页存活、刷新不丢、关闭即回收
+    //   · ?slot=名字         → 显式具名分身,用 localStorage 持久化(可长期保留的小号)
+    //   · ?token=xxx         → 直接以指定 token 登录某角色(优先级最高)
     const urlParams = new URLSearchParams(location.search);
-    const identitySlot = urlParams.get('slot');
-    const TOKEN_KEY = identitySlot ? `mmo_token:${identitySlot}` : 'mmo_token';
-    const NAME_KEY = identitySlot ? `mmo_name:${identitySlot}` : 'mmo_name';
-    let myToken = urlParams.get('token') || localStorage.getItem(TOKEN_KEY) || null;
-    let currentName = localStorage.getItem(NAME_KEY) || '';
+    const explicitSlot = urlParams.get('slot');
+    const explicitToken = urlParams.get('token');
+
+    // 每个标签页稳定 id(刷新不变,关闭失效),用于主标签租约判定
+    let tabId = sessionStorage.getItem('mmo_tab');
+    if (!tabId) {
+      tabId = 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      sessionStorage.setItem('mmo_tab', tabId);
+    }
+
+    // 主标签租约:首个标签占用主身份并周期性续租;租约过期(标签关闭)后新标签可接管
+    const LEASE_KEY = 'mmo_primary_lease';
+    const LEASE_TTL = 8000;
+    let isPrimary = false;
+    if (!explicitSlot && !explicitToken) {
+      let lease = null;
+      try { lease = JSON.parse(localStorage.getItem(LEASE_KEY) || 'null'); } catch { lease = null; }
+      const alive = lease && typeof lease.ts === 'number' && (Date.now() - lease.ts) < LEASE_TTL;
+      if (!alive || lease.tab === tabId) {
+        isPrimary = true;
+        localStorage.setItem(LEASE_KEY, JSON.stringify({ tab: tabId, ts: Date.now() }));
+        setInterval(() => localStorage.setItem(LEASE_KEY, JSON.stringify({ tab: tabId, ts: Date.now() })), 3000);
+      }
+    }
+
+    // 身份存储路由:主标签/具名分身落地 localStorage,副标签落地(标签级)sessionStorage
+    const identity = explicitSlot
+      ? { store: localStorage, tokenKey: `mmo_token:${explicitSlot}`, nameKey: `mmo_name:${explicitSlot}` }
+      : isPrimary
+        ? { store: localStorage, tokenKey: 'mmo_token', nameKey: 'mmo_name' }
+        : { store: sessionStorage, tokenKey: 'mmo_token', nameKey: 'mmo_name' };
+
+    let myToken = explicitToken || identity.store.getItem(identity.tokenKey) || null;
+    let currentName = identity.store.getItem(identity.nameKey) || '';
     let pingInterval = null;
     let reconnectTimer = null;
     let reconnectAttempts = 0;
+    let kicked = false; // 被服务端主动踢下线(如重复登录):停止自动重连,避免无限互踢
     let players = {};
     let mapWidth = 12000;
     let mapHeight = 4000;
@@ -682,6 +712,7 @@
     let currentZoneId = -1;    // 玩家当前所在带(用于进带横幅切换判定)
     let zoneBanner = null;     // { text, sub, color, t } 进带横幅,t 从 1 递减到 0 淡出
     let camera = { x: 0, y: 0 };
+    let snapCamera = true;   // 进场/复活时下一帧把相机瞬时吸附到玩家(避免从(0,0)缓动甩到屏外)
     let keys = {};
     let connected = false;
     let pingTime = 0;
@@ -1044,8 +1075,8 @@
     // 重置角色:清掉本地身份,下次进入即注册全新角色(服务端会分配新 token)
     resetCharBtn.onclick = e => {
       e.preventDefault();
-      localStorage.removeItem(TOKEN_KEY);
-      localStorage.removeItem(NAME_KEY);
+      identity.store.removeItem(identity.tokenKey);
+      identity.store.removeItem(identity.nameKey);
       myToken = null;
       currentName = '';
       nameInput.value = '';
@@ -1056,8 +1087,9 @@
     joinBtn.onclick = () => {
       const name = nameInput.value.trim() || 'Hero';
       currentName = name;
-      localStorage.setItem(NAME_KEY, name);
+      identity.store.setItem(identity.nameKey, name);
       reconnectAttempts = 0;
+      kicked = false;
       connect(name);
       loginOverlay.style.display = 'none';
     };
@@ -1092,7 +1124,7 @@
 
     // 掉线自动重连:带同一 token 回到共享世界,服务端把角色恢复到掉线前的位置
     function scheduleReconnect() {
-      if (reconnectTimer || !currentName) return;
+      if (reconnectTimer || !currentName || kicked) return;
       reconnectAttempts++;
       if (reconnectAttempts > 30) {
         addSysMsg('重连失败,请刷新页面重试');
@@ -1115,8 +1147,8 @@
           // 记住服务端回传的角色 token(首次注册即在此落地本地存储)
           if (msg.data.token) {
             myToken = msg.data.token;
-            localStorage.setItem(TOKEN_KEY, myToken);
-            localStorage.setItem(NAME_KEY, msg.data.self.name || currentName);
+            identity.store.setItem(identity.tokenKey, myToken);
+            identity.store.setItem(identity.nameKey, msg.data.self.name || currentName);
           }
           reconnectAttempts = 0;
           mapWidth  = msg.data.mapWidth;
@@ -1125,6 +1157,7 @@
           currentZoneId = -1; // 重置:下一帧据玩家位置重新判定并弹进带横幅
           players = {};   // 清空旧快照:重连时避免残留其他玩家的「幽灵」
           players[myId] = msg.data.self;
+          snapCamera = true;   // 进场/重连:下一帧把相机吸附到出生点,避免从(0,0)缓动甩出屏外
           for (const p of msg.data.players) players[p.id] = p;
           obstacles = msg.data.obstacles || [];
           if (typeof Pathfinder !== 'undefined') {
@@ -1273,7 +1306,7 @@
             players[msg.data.id] = msg.data;
           }
           spawnRing(msg.data.x, msg.data.y, '#ffe066', 16);
-          if (msg.data.id === myId) addSysMsg('✦ 已复活！');
+          if (msg.data.id === myId) { snapCamera = true; addSysMsg('✦ 已复活！'); }
           break;
 
         case 's_weather':
@@ -1395,6 +1428,13 @@
 
         case 's_error':
           addSysMsg(`错误: ${msg.data.msg}`);
+          // 被服务端主动踢下线(重复登录等):停止自动重连,提示改用独立身份多开
+          if (msg.data.fatal || msg.data.code === 'kicked') {
+            kicked = true;
+            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+            statusEl.textContent = '○ KICKED';
+            addSysMsg('该角色已在另一个窗口登录,此窗口已停止重连。刷新本页可重新接管。');
+          }
           break;
       }
     }
@@ -2353,7 +2393,6 @@
         const ok = dist <= sk.range;
         const lineCol = ok ? col : '#ff4466';
         if (dist > 14) {
-          drawAimArrow(px, py, target.x, target.y, lineCol, ok ? 0.85 : 0.45);
           drawTargetReticle(target.x, target.y, sk.hitR || 18, lineCol);
           drawLockMarker(target.x, target.y, '#ffe066');
         }
@@ -2364,7 +2403,6 @@
     function drawSkillAreaAim(px, py, sk, col) {
       const aim = resolveAreaAim(sk);
       const aoeCol = aim.locked ? '#ffe066' : (aim.inRange ? col : '#ff4466');
-      if (!aim.inRange) drawAimArrow(px, py, aim.x, aim.y, '#ff4466', 0.35);
       drawSkillImpactFootprint(aim.x, aim.y, sk.radius || 130, sk.shape || 'burst', aoeCol, aim.inRange);
       drawTargetReticle(aim.x, aim.y, 6, aoeCol);
       if (aim.target) drawLockMarker(aim.target.x, aim.target.y, aim.locked ? '#ffe066' : aoeCol);
@@ -2418,31 +2456,6 @@
         ctx.stroke();
       }
       ctx.setLineDash([]);
-      ctx.restore();
-    }
-
-    function drawAimArrow(x0, y0, x1, y1, color, alpha) {
-      const sx0 = x0 - camera.x, sy0 = y0 - camera.y;
-      const sx1 = x1 - camera.x, sy1 = y1 - camera.y;
-      const ang = Math.atan2(y1 - y0, x1 - x0);
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.strokeStyle = color;
-      ctx.fillStyle = color;
-      ctx.lineWidth = 2;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(sx0, sy0);
-      ctx.lineTo(sx1, sy1);
-      ctx.stroke();
-      // 箭头
-      const ah = 7;
-      ctx.beginPath();
-      ctx.moveTo(sx1, sy1);
-      ctx.lineTo(sx1 - Math.cos(ang - 0.45) * ah, sy1 - Math.sin(ang - 0.45) * ah);
-      ctx.lineTo(sx1 - Math.cos(ang + 0.45) * ah, sy1 - Math.sin(ang + 0.45) * ah);
-      ctx.closePath();
-      ctx.fill();
       ctx.restore();
     }
 
@@ -4016,8 +4029,15 @@
       if (me) {
         const tx = (me.targetX ?? me.x) - W / 2;
         const ty = (me.targetY ?? me.y) - H / 2;
-        camera.x += (tx - camera.x) * 0.1;
-        camera.y += (ty - camera.y) * 0.1;
+        if (snapCamera) {
+          // 进场/复活首帧:直接吸附,玩家立刻居中(此时 W/H 才是真实视口尺寸)
+          camera.x = tx;
+          camera.y = ty;
+          snapCamera = false;
+        } else {
+          camera.x += (tx - camera.x) * 0.1;
+          camera.y += (ty - camera.y) * 0.1;
+        }
       }
 
       // ── Background ─────────────────────────────────────────

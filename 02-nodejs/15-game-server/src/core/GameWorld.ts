@@ -24,6 +24,11 @@ import { WeaponDrop } from './WeaponDrop';
 import { rollWeaponDrop } from './Weapon';
 import { HealthPack } from './HealthPack';
 import { PlayerStore } from './PlayerStore';
+import { PersistenceBackend } from '../persistence/types';
+import { TieredBackend } from '../persistence/TieredBackend';
+import { RedisBackend } from '../persistence/RedisBackend';
+import { SqliteBackend } from '../persistence/SqliteBackend';
+import { NullBackend } from '../persistence/NullBackend';
 import { ExplorationMap } from './ExplorationMap';
 import { DEFAULT_SKILL_IDS } from './Skills';
 import { Zone, ZONES, ZONE_ENEMY_COUNT, zonePublicState } from './Zone';
@@ -40,7 +45,7 @@ export class GameWorld {
   readonly drops: Map<number, WeaponDrop> = new Map();
   readonly healthPacks: Map<number, HealthPack> = new Map();
   private nextHpPackAt: number = 0;
-  readonly playerStore: PlayerStore = new PlayerStore(); // 角色存档:掉线重连恢复位置/装备
+  readonly playerStore: PlayerStore; // 角色存档:掉线重连 + 重启恢复位置/装备(Redis 热层 + SQLite 冷层)
   readonly aoi: AOIManager;
   readonly spawner: Spawner;
   readonly obstacles: Obstacle[];
@@ -61,6 +66,8 @@ export class GameWorld {
   readonly playerTags: Map<string, PlayerReputation> = new Map();
 
   constructor() {
+    this.playerStore = new PlayerStore(GameWorld.createBackend());
+
     this.aoi = new AOIManager(
       GameConfig.AOI_CELL_SIZE,
       GameConfig.MAP_WIDTH,
@@ -138,8 +145,24 @@ export class GameWorld {
     this.nextHpPackAt = Date.now() + GameConfig.HP_PACK_INTERVAL;
   }
 
+  /** 按配置组装持久化后端:开启时 Redis(热)+ SQLite(冷)双层,关闭时空后端(纯内存)。 */
+  private static createBackend(): PersistenceBackend {
+    if (!GameConfig.PERSIST_ENABLED) return new NullBackend();
+    return new TieredBackend(
+      new RedisBackend(GameConfig.REDIS_URL, GameConfig.REDIS_KEY_PREFIX, GameConfig.REDIS_TTL_SEC),
+      new SqliteBackend(GameConfig.SQLITE_PATH),
+    );
+  }
+
+  /** 连接持久层(建表 / 连 Redis);须在 start() 前 await,确保首个玩家能读到存档。 */
+  async initPersistence(): Promise<void> {
+    await this.playerStore.init();
+  }
+
   start(): void {
     this.timer.start();
+    // 启动 write-behind:周期快照在线玩家写回持久层
+    this.playerStore.startFlushLoop(() => this.players.values());
     // 天气定时重掷 + 广播(dynamic 生成的运行时驱动)
     this.weatherTimer = setInterval(() => {
       this.weather = this.rollWeather();
@@ -148,12 +171,18 @@ export class GameWorld {
     logger.info(`GameWorld started | tick rate: ${GameConfig.TICK_RATE}Hz | map: ${GameConfig.MAP_WIDTH}x${GameConfig.MAP_HEIGHT} | obstacles: ${this.obstacles.length} | enemies: ${this.enemies.size} | weather: ${this.weather.kind}`);
   }
 
-  stop(): void {
+  /** 关服:停循环 → 快照所有在线玩家做最终写回 → 关闭持久层连接。 */
+  async stop(): Promise<void> {
     this.timer.stop();
     if (this.weatherTimer) {
       clearInterval(this.weatherTimer);
       this.weatherTimer = null;
     }
+    this.playerStore.stopFlushLoop();
+    // 最终写回:把所有在线玩家的当前状态快照并落库
+    for (const player of this.players.values()) this.playerStore.snapshot(player);
+    await this.playerStore.flush([...this.players.values()].map(p => p.token));
+    await this.playerStore.close();
     logger.info('GameWorld stopped');
   }
 
@@ -180,9 +209,10 @@ export class GameWorld {
     logger.info(`Weather → ${this.weather.kind} (intensity ${this.weather.intensity.toFixed(2)})`);
   }
 
-  addPlayer(player: Player): void {
-    // 有存档(掉线重连 / 换标签页)→ 恢复上次位置、血量、装备、探索进度;否则随机安全出生点
-    const saved = this.playerStore.get(player.token);
+  async addPlayer(player: Player): Promise<void> {
+    // 有存档(掉线重连 / 换标签页 / 服务端重启后)→ 恢复上次位置、血量、装备、探索进度;否则随机安全出生点
+    // load 走「内存缓存 → Redis 热层 → SQLite 冷层」,是 join 链路上唯一的异步点(热路径 tick 不受影响)
+    const saved = await this.playerStore.load(player.token);
     if (saved) {
       player.position = { x: saved.x, y: saved.y };
       // 先恢复等级/经验,再 equip:等级加成会叠加到攻击力上
@@ -244,8 +274,11 @@ export class GameWorld {
   }
 
   removePlayer(player: Player): void {
-    // 离线前先存档:下次带同一 token 重连即可恢复(全局共享世界中的个人进度)
-    this.playerStore.save(player);
+    // 离线前先快照 + 即时写回:下次带同一 token 重连(乃至服务端重启后)即可恢复个人进度
+    this.playerStore.snapshot(player);
+    this.playerStore.flush([player.token]).catch((err) =>
+      logger.error(`[Persist] 下线写回失败: ${(err as Error).message}`)
+    );
 
     this.aoi.removePlayer(player);
     this.players.delete(player.id);

@@ -11,6 +11,7 @@ export class GameWebSocketServer {
   private wss: WSServer;
   private sessions: Map<string, Session> = new Map();
   private playerBySession: Map<string, Player> = new Map();
+  private joining: Set<string> = new Set(); // 正在异步读档入场的会话:期间到达的消息直接丢弃,避免重复 join
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private nextSessionId = 1;
 
@@ -67,7 +68,7 @@ export class GameWebSocketServer {
 
     switch (msg.type) {
       case MsgType.C_JOIN:
-        if (!player) this.handleJoin(sessionId, session, msg.data);
+        if (!player && !this.joining.has(sessionId)) void this.handleJoin(sessionId, session, msg.data);
         break;
 
       case MsgType.C_PING:
@@ -76,8 +77,8 @@ export class GameWebSocketServer {
 
       case MsgType.C_MOVE:
         if (!player) {
-          // 第一条消息当作 join
-          this.handleJoin(sessionId, session, msg.data);
+          // 第一条消息当作 join(读档入场期间的后续 move 直接丢弃,客户端 20Hz 会重发)
+          if (!this.joining.has(sessionId)) void this.handleJoin(sessionId, session, msg.data);
         } else {
           this.world.movement.handleInput(player, msg.data);
         }
@@ -115,26 +116,41 @@ export class GameWebSocketServer {
 
       default:
         // 第一条非 ping 消息视为 join
-        if (!player && msg.data?.name) {
-          this.handleJoin(sessionId, session, msg.data);
+        if (!player && !this.joining.has(sessionId) && msg.data?.name) {
+          void this.handleJoin(sessionId, session, msg.data);
         }
         break;
     }
   }
 
-  private handleJoin(sessionId: string, session: Session, data: any): void {
-    const name = (data?.name || `Player_${this.nextSessionId}`).slice(0, 16);
+  private async handleJoin(sessionId: string, session: Session, data: any): Promise<void> {
+    if (this.joining.has(sessionId) || this.playerBySession.has(sessionId)) return;
+    this.joining.add(sessionId);
+    try {
+      const name = (data?.name || `Player_${this.nextSessionId}`).slice(0, 16);
 
-    // token = 稳定角色身份:客户端带来则沿用(恢复存档),否则服务端新生成并随 JOIN_WORLD 回传
-    let token = typeof data?.token === 'string' && data.token.length >= 8 ? data.token : '';
-    if (!token) token = this.world.playerStore.newToken();
+      // token = 稳定角色身份:客户端带来则沿用(恢复存档),否则服务端新生成并随 JOIN_WORLD 回传
+      let token = typeof data?.token === 'string' && data.token.length >= 8 ? data.token : '';
+      if (!token) token = this.world.playerStore.newToken();
 
-    // 同一角色重复登录(重连竞态 / 多标签页):踢掉旧连接,先存档再让新连接恢复,避免分身
-    this.kickExisting(token, sessionId);
+      // 同一角色重复登录(重连竞态 / 多标签页):踢掉旧连接,先存档再让新连接恢复,避免分身
+      this.kickExisting(token, sessionId);
 
-    const player = new Player(name, session, token);
-    this.playerBySession.set(sessionId, player);
-    this.world.addPlayer(player);
+      const player = new Player(name, session, token);
+      // addPlayer 内含异步读档;完成后再登记 playerBySession,期间的消息由 joining 守卫丢弃
+      await this.world.addPlayer(player);
+
+      // 读档期间会话可能已断开:回收,避免留下幽灵玩家
+      if (!this.sessions.has(sessionId)) {
+        this.world.removePlayer(player);
+        return;
+      }
+      this.playerBySession.set(sessionId, player);
+    } catch (err) {
+      logger.error(`Join failed [${sessionId}]: ${(err as Error).message}`);
+    } finally {
+      this.joining.delete(sessionId);
+    }
   }
 
   /** 若某 token 已有在线连接,断开旧连接(其状态会在 removePlayer 时存档) */
@@ -145,7 +161,8 @@ export class GameWebSocketServer {
       const oldSession = this.sessions.get(oldSid);
       this.world.removePlayer(oldPlayer); // 存档 + 从世界移除
       this.playerBySession.delete(oldSid);
-      oldSession?.send(MsgType.ERROR, { msg: '角色已在其他窗口登录' });
+      // fatal:被踢的旧连接不应自动重连(否则两窗口同 token 会无限互踢)
+      oldSession?.send(MsgType.ERROR, { msg: '角色已在其他窗口登录', code: 'kicked', fatal: true });
       oldSession?.close();
       this.sessions.delete(oldSid);
     }

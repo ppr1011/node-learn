@@ -7,3 +7,9 @@ dist/
 
 # 本地密钥（勿提交）
 .env
+
+# 持久化数据(SQLite 冷层账本，勿提交)
+data/
+*.db
+*.db-shm
+*.db-wal

@@ -26,6 +26,16 @@ export const GameConfig = {
   ROCK_MIN_RADIUS: 34,
   ROCK_MAX_RADIUS: 84,
 
+  // ── 状态持久化(冷热双层:Redis 热存 + SQLite 冷存,write-behind 写回)──────
+  // 让玩家进度活得比进程久:重启服务端后带同一 token 重连即可恢复位置/血量/武器/等级/迷雾。
+  // 世界本身用确定性种子重建,无需持久化;只落库「角色个人进度」。
+  PERSIST_ENABLED: process.env.PERSIST_ENABLED !== '0', // 0 = 关闭(退回纯内存旧行为)
+  PERSIST_FLUSH_MS: 5000,                               // 每 5s 快照在线玩家批量写回(write-behind)
+  REDIS_URL: process.env.REDIS_URL ?? 'redis://127.0.0.1:6379', // 热层;连不上自动降级为纯 SQLite
+  REDIS_KEY_PREFIX: process.env.REDIS_KEY_PREFIX ?? 'game:player:',
+  REDIS_TTL_SEC: Number(process.env.REDIS_TTL_SEC) || 0, // 0 = 热层不过期(账本);>0 给活跃态设 TTL
+  SQLITE_PATH: process.env.SQLITE_PATH ?? 'data/players.db', // 冷层永久账本(单文件,进程外存活)
+
   // 网络
   HEARTBEAT_INTERVAL: 5000,
   HEARTBEAT_TIMEOUT: 15000,
