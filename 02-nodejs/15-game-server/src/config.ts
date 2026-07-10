@@ -98,6 +98,11 @@ export const GameConfig = {
   LLM_LOCAL_MODEL: process.env.LLM_LOCAL_MODEL ?? 'qwen3.5:9b',
   LLM_LOCAL_THINK: process.env.LLM_LOCAL_THINK === '1', // 默认关思考:推理模型思考会慢到分钟级且常截断
   LLM_LOCAL_MAX_TOKENS: 256,    // 关思考后答案就是一小段 JSON,256 足够(开 think 需自行调大)
+  // ── 上下文窗口:Ollama 默认 num_ctx 仅 4096,与模型训练上限(如 Qwen 256K)无关 ──
+  // 0 = 自动:启动首用时探测该模型 /api/show 的 context_length,按 CAP 收敛(避免直接拉满爆显存)
+  // >0 = 手动强制该 num_ctx(单位 token)
+  LLM_LOCAL_NUM_CTX: Number(process.env.LLM_LOCAL_NUM_CTX) || 0,
+  LLM_LOCAL_NUM_CTX_CAP: Number(process.env.LLM_LOCAL_NUM_CTX_CAP) || 8192, // 自动模式显存安全上限
   LLM_LOCAL_TIMEOUT_MS: 30000,  // 首次调用含模型冷加载,给足超时;超时即回退 Mock,不卡住游戏循环
   LLM_LOG_DIALOGUE: true,       // 后台打印每次 NPC 决策/对话(含实际产出的模型来源)
   LLM_NPC_COUNT: 2,             // 新手草原固定刷几只 LLM 守卫

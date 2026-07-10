@@ -160,6 +160,7 @@ const SYSTEM_PROMPT = [
   '必填 intent: attack flee patrol taunt hunt follow guide escort follow_npc(小写英文,禁止中文intent)。可选 speech(中文≤30字) reason(≤20字)。',
   '玩家发起对话时 speech 必填(对玩家说的台词);reason 仅填内部备注(如"无威胁"),勿把台词写在 reason。',
   '玩家说话时 speech 必须回应其具体内容(引用关键词),禁止说「刚才说了什么」「没听清」等推脱。',
+  'speech 里称呼对方只用玩家名(快照末尾会给出);你自己的名字仅用于自我介绍(如"我是XX"),绝不能拿来称呼对方。',
   '无玩家对话时通常省略 speech(仅 taunt/打招呼才说话),尽量精简输出。',
   '示例(有对话):{"intent":"taunt","speech":"守夜人,听个睡前故事吧","reason":"讲笑话"}',
   '示例(无对话):{"intent":"patrol","reason":"无威胁"}',
@@ -222,7 +223,7 @@ function buildUserPrompt(s: LLMGameSnapshot): string {
     list('人生经历', s.memoryArchives.slice(-2)),
     list('区域传闻', s.zoneRumors.slice(-3)),
     `玩家${s.chatFrom}说:「${s.chatText}」`,
-    '请直接回应这句话的内容。',
+    `请以「${s.npcName}」的身份回应,称呼对方用「${s.chatFrom}」;绝不要用你自己的名字「${s.npcName}」去称呼对方。`,
   ].filter(Boolean).join('\n');
 }
 
@@ -301,6 +302,8 @@ export interface OllamaProviderOptions {
   maxTokens: number;
   timeoutMs?: number;
   think?: boolean;     // 是否让推理模型思考(默认关闭:Qwen3 等一旦思考会慢到分钟级且常截断)
+  numCtx?: number;     // >0 强制 num_ctx;0/省略 = 自动探测模型上限并按 numCtxCap 收敛
+  numCtxCap?: number;  // 自动模式下的显存安全上限(默认 8192)
 }
 
 /**
@@ -312,8 +315,54 @@ export interface OllamaProviderOptions {
  */
 export class OllamaProvider implements LLMProvider {
   private readonly mockFallback = new MockLLMProvider();
+  private ctxPromise: Promise<number> | null = null; // num_ctx 懒探测结果(全生命周期缓存一次)
 
   constructor(private readonly opts: OllamaProviderOptions) {}
+
+  /**
+   * 解析本次请求实际使用的 num_ctx —— 按模型自适配。
+   * Ollama 默认 num_ctx 仅 4096,与模型训练上限无关;不显式指定就会静默截断长上下文。
+   * 手动指定(numCtx>0)直接用;否则探测 /api/show 的 context_length,按 CAP 收敛(防显存爆),
+   * 并设下限确保能容纳输出。探测失败回退到 CAP。结果缓存,仅首用探测一次。
+   */
+  private resolveNumCtx(): Promise<number> {
+    if (this.ctxPromise) return this.ctxPromise;
+
+    const floor = this.opts.maxTokens + 1024; // 至少容纳 prompt 余量 + 输出,避免静默截断
+    const cap = Math.max(this.opts.numCtxCap ?? 8192, floor);
+    const forced = this.opts.numCtx ?? 0;
+    if (forced > 0) {
+      const eff = Math.max(forced, floor);
+      logger.info(`[LLM:${this.opts.label}] num_ctx=${eff}(手动指定)`);
+      this.ctxPromise = Promise.resolve(eff);
+      return this.ctxPromise;
+    }
+
+    const showUrl = this.opts.apiUrl.replace(/\/api\/chat\/?$/, '/api/show');
+    this.ctxPromise = (async () => {
+      try {
+        const res = await fetch(showUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: this.opts.model }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = (await res.json()) as { model_info?: Record<string, unknown> };
+        // context_length 的 key 随架构变化(如 qwen35.context_length / llama.context_length)
+        const entry = Object.entries(body.model_info ?? {}).find(([k]) => k.endsWith('.context_length'));
+        const modelMax = typeof entry?.[1] === 'number' ? entry[1] : 0;
+        const eff = Math.max(modelMax > 0 ? Math.min(modelMax, cap) : cap, floor);
+        logger.info(
+          `[LLM:${this.opts.label}] ${this.opts.model} 最大上下文 ${modelMax || '未知'} → num_ctx=${eff}(上限 ${cap})`
+        );
+        return eff;
+      } catch (err) {
+        logger.warn(`[LLM:${this.opts.label}] 探测上下文失败,回退 num_ctx=${cap}: ${(err as Error).message}`);
+        return cap;
+      }
+    })();
+    return this.ctxPromise;
+  }
 
   private fallback(snapshot: LLMGameSnapshot, now: number, reason: string): Promise<LLMDirective> {
     if (snapshot.chatText) {
@@ -333,6 +382,7 @@ export class OllamaProvider implements LLMProvider {
 
   async decide(snapshot: LLMGameSnapshot): Promise<LLMDirective> {
     const now = Date.now();
+    const numCtx = await this.resolveNumCtx();
     const controller = new AbortController();
     const timer = this.opts.timeoutMs
       ? setTimeout(() => controller.abort(), this.opts.timeoutMs)
@@ -347,7 +397,7 @@ export class OllamaProvider implements LLMProvider {
           stream: false,
           think: this.opts.think ?? false,
           format: 'json',
-          options: { temperature: 0.3, num_predict: this.opts.maxTokens },
+          options: { temperature: 0.3, num_predict: this.opts.maxTokens, num_ctx: numCtx },
           messages: [
             { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: buildUserPrompt(snapshot) },
@@ -358,7 +408,16 @@ export class OllamaProvider implements LLMProvider {
         const errBody = await res.text().catch(() => '');
         throw new Error(`HTTP ${res.status}: ${errBody.slice(0, 160)}`);
       }
-      const body = (await res.json()) as { message?: { content?: unknown } };
+      const body = (await res.json()) as {
+        message?: { content?: unknown };
+        prompt_eval_count?: number; // Ollama 回传:本次 prompt 实际 token 数
+        eval_count?: number;        // Ollama 回传:本次输出 token 数
+      };
+      if (GameConfig.LLM_LOG_DIALOGUE && (body.prompt_eval_count || body.eval_count)) {
+        logger.info(
+          `[LLM:${this.opts.label}] tokens prompt=${body.prompt_eval_count ?? '?'} 输出=${body.eval_count ?? '?'} / num_ctx=${numCtx}`
+        );
+      }
       const raw = typeof body.message?.content === 'string' ? body.message.content : '';
       const content = stripThink(raw); // think:true 时思考在 message.thinking,content 仍是纯答案;防御性再剥一次
       const directive = parseDirective(content, now);
@@ -559,6 +618,8 @@ export function createLLMProvider(
       maxTokens: GameConfig.LLM_LOCAL_MAX_TOKENS,
       timeoutMs: GameConfig.LLM_LOCAL_TIMEOUT_MS,
       think: GameConfig.LLM_LOCAL_THINK,
+      numCtx: GameConfig.LLM_LOCAL_NUM_CTX,
+      numCtxCap: GameConfig.LLM_LOCAL_NUM_CTX_CAP,
     });
   }
 

@@ -284,8 +284,62 @@
       border-radius: 4px;
       overflow: hidden;
       background: rgba(4, 8, 16, 0.85);
+      cursor: pointer;
     }
     #minimap-canvas { display: block; }
+    /* 放大世界地图 */
+    #map-modal-scrim {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 209;
+    }
+    #map-modal-scrim.open { display: block; }
+    #map-modal {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: linear-gradient(160deg, #101a2e 0%, #0a1220 100%);
+      border: 1px solid #2a5a8a;
+      border-radius: 8px;
+      padding: 10px 12px 12px;
+      z-index: 210;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.7);
+    }
+    #map-modal.open { display: block; }
+    #map-modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: #7ec8ff;
+      font-size: 13px;
+      letter-spacing: 2px;
+      margin-bottom: 8px;
+    }
+    #map-modal-close {
+      color: #e94560;
+      cursor: pointer;
+      border: none;
+      background: none;
+      font-size: 16px;
+      line-height: 1;
+    }
+    #map-modal-canvas {
+      display: block;
+      border: 1px solid #2a5a8a;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #map-modal-hint {
+      margin-top: 8px;
+      text-align: center;
+      color: #ffd23f;
+      font-size: 11px;
+      letter-spacing: 1px;
+    }
     /* Login */
     #login-overlay {
       position: fixed;
@@ -420,6 +474,7 @@
       #drawer-scrim.open { opacity: 1; pointer-events: auto; }
       /* 摇杆/攻击键占据底部两侧,小地图缩小并移到左上,避免遮挡 */
       #minimap { width: 108px; height: 74px; bottom: auto; top: 10px; left: 10px; }
+      #map-modal { padding: 8px; }
     }
 
     /* ── 触屏控件容器:铺满屏幕,自身不拦截事件,子控件各自开启 ── */
@@ -532,6 +587,16 @@
     <h3 id="npc-panel-title">NPC Agent</h3>
     <div id="npc-panel-body"></div>
   </div>
+  <!-- 放大世界地图(点击小地图弹出) -->
+  <div id="map-modal-scrim"></div>
+  <div id="map-modal">
+    <div id="map-modal-head">
+      <span>世界地图</span>
+      <button id="map-modal-close" type="button">✕</button>
+    </div>
+    <canvas id="map-modal-canvas"></canvas>
+    <div id="map-modal-hint">点击金色 NPC 自动寻路前往</div>
+  </div>
   <div id="quest-hud"></div>
   <div id="skill-bar">
     <button class="skill-btn heal" data-skill="heal" title="J 治疗 · 靠近自动选中 · Tab 切换目标">
@@ -594,8 +659,19 @@
     let myId = null;
     // 角色身份持久化:token 长期保存在 localStorage,作为跨会话的稳定角色标识;
     // name 记住上次角色名。掉线后带 token 重连 → 服务端恢复位置/血量/装备。
-    let myToken = localStorage.getItem('mmo_token') || null;
-    let currentName = localStorage.getItem('mmo_name') || '';
+    //
+    // localStorage 在同源下被同一浏览器的所有窗口/标签共享,因此默认情况下多开窗口会
+    // 共用同一个 token,被服务端判为「重复登录」而互相踢线。为支持同一浏览器多窗口各自
+    // 登录不同角色,身份存储按 slot 分桶:
+    //   · 无参数        → 使用 mmo_token(与旧行为一致)
+    //   · ?slot=2 / ?slot=alice → 独立身份,各自持久化,互不踢线
+    //   · ?token=xxx    → 直接以该 token 登录指定角色(优先级最高,不落地存储的默认桶)
+    const urlParams = new URLSearchParams(location.search);
+    const identitySlot = urlParams.get('slot');
+    const TOKEN_KEY = identitySlot ? `mmo_token:${identitySlot}` : 'mmo_token';
+    const NAME_KEY = identitySlot ? `mmo_name:${identitySlot}` : 'mmo_name';
+    let myToken = urlParams.get('token') || localStorage.getItem(TOKEN_KEY) || null;
+    let currentName = localStorage.getItem(NAME_KEY) || '';
     let pingInterval = null;
     let reconnectTimer = null;
     let reconnectAttempts = 0;
@@ -629,6 +705,8 @@
       arriveDist: 72,
       waypointDist: 36,
     };
+    let mapModalOpen = false; // 放大世界地图是否打开
+    let npcHits = [];         // 放大地图上 NPC 的屏幕命中框 { id, sx, sy, r }
     let enemies = {};     // id → enemy state (from server)
     const speechBubbles = new Map(); // entityId → { text, expiresAt } (NPC 用负 id)
     let drops = {};       // id → 地面武器掉落物 { id, kind, rarity, x, y }
@@ -665,6 +743,10 @@
     const mmCanvas   = document.getElementById('minimap-canvas');
     const mmCtx      = mmCanvas.getContext('2d');
     const mmEl       = document.getElementById('minimap');
+    const bigEl      = document.getElementById('map-modal');
+    const bigScrim   = document.getElementById('map-modal-scrim');
+    const bigCanvas  = document.getElementById('map-modal-canvas');
+    const bigCtx     = bigCanvas.getContext('2d');
     const statusEl   = document.getElementById('status');
     const statsEl    = document.getElementById('stats');
     const xpFillEl   = document.getElementById('xp-fill');
@@ -962,8 +1044,8 @@
     // 重置角色:清掉本地身份,下次进入即注册全新角色(服务端会分配新 token)
     resetCharBtn.onclick = e => {
       e.preventDefault();
-      localStorage.removeItem('mmo_token');
-      localStorage.removeItem('mmo_name');
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(NAME_KEY);
       myToken = null;
       currentName = '';
       nameInput.value = '';
@@ -974,7 +1056,7 @@
     joinBtn.onclick = () => {
       const name = nameInput.value.trim() || 'Hero';
       currentName = name;
-      localStorage.setItem('mmo_name', name);
+      localStorage.setItem(NAME_KEY, name);
       reconnectAttempts = 0;
       connect(name);
       loginOverlay.style.display = 'none';
@@ -1033,8 +1115,8 @@
           // 记住服务端回传的角色 token(首次注册即在此落地本地存储)
           if (msg.data.token) {
             myToken = msg.data.token;
-            localStorage.setItem('mmo_token', myToken);
-            localStorage.setItem('mmo_name', msg.data.self.name || currentName);
+            localStorage.setItem(TOKEN_KEY, myToken);
+            localStorage.setItem(NAME_KEY, msg.data.self.name || currentName);
           }
           reconnectAttempts = 0;
           mapWidth  = msg.data.mapWidth;
@@ -1903,6 +1985,26 @@
     document.getElementById('npc-panel-close').addEventListener('click', closeNpcPanel);
     document.getElementById('npc-scrim').addEventListener('click', closeNpcPanel);
 
+    // ─── 放大世界地图交互 ──────────────────────────────────────
+    mmEl.addEventListener('click', openMapModal);
+    bigScrim.addEventListener('click', closeMapModal);
+    document.getElementById('map-modal-close').addEventListener('click', closeMapModal);
+    bigCanvas.addEventListener('click', (e) => {
+      const rect = bigCanvas.getBoundingClientRect();
+      // getBoundingClientRect 尺寸即 CSS 尺寸,这里 canvas 无额外 CSS 缩放,故 1:1
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      let best = null, bestD = Infinity;
+      for (const hit of npcHits) {
+        const d = Math.hypot(cx - hit.sx, cy - hit.sy);
+        if (d <= hit.r && d < bestD) { bestD = d; best = hit; }
+      }
+      if (best) {
+        const npc = enemies[best.id];
+        if (npc) { startAutoNavToNpc(npc); closeMapModal(); }
+      }
+    });
+
     function updateQuestHud(data) {
       const hud = document.getElementById('quest-hud');
       if (!data || data.status === 'done') {
@@ -2058,6 +2160,7 @@
 
     // ─── Input ────────────────────────────────────────────────
     document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && mapModalOpen) { closeMapModal(); return; }
       if (document.activeElement === chatInput) {
         if (e.key === 'Enter') {
           const text = chatInput.value.trim();
@@ -3720,94 +3823,162 @@
     }
 
     // ─── Minimap ──────────────────────────────────────────────
-    function drawMinimap() {
-      const mw = mmCanvas.width, mh = mmCanvas.height;
-      mmCtx.clearRect(0, 0, mw, mh);
-      mmCtx.fillStyle = 'rgba(4,8,18,0.9)';
-      mmCtx.fillRect(0, 0, mw, mh);
+    const ENEMY_MM_COLOR = {
+      slime: '#43e1b3', skeleton: '#8b9bb4', demon: '#e84537',
+      orc: '#6fae4a', wraith: '#9d7bd8', golem: '#8a8f9c', dragon: '#e0663a',
+    };
+
+    /**
+     * 把世界地图绘制到任意画布上下文,小地图与放大地图共用。
+     * @param g   CanvasRenderingContext2D
+     * @param mw  目标宽(px)
+     * @param mh  目标高(px)
+     * @param opts { big?: boolean, npcHits?: Array } —— big 时放大点位并高亮 LLM NPC(带名字),
+     *             并把 NPC 屏幕命中框 push 进 npcHits(供点击寻路命中测试)。
+     */
+    function renderMapTo(g, mw, mh, opts = {}) {
+      const big = !!opts.big;
+      const k = big ? Math.max(2, mw / 150) : 1; // 放大模式下点位/线宽的整体缩放
+      g.clearRect(0, 0, mw, mh);
+      g.fillStyle = 'rgba(4,8,18,0.9)';
+      g.fillRect(0, 0, mw, mh);
 
       const sx = mw / mapWidth, sy = mh / mapHeight;
 
       // 难度带:彩色半透明竖带(在障碍物/雾之下)
       for (const z of zones) {
-        mmCtx.fillStyle = hexToRgba(z.color, 0.35);
-        mmCtx.fillRect(z.bounds.x * sx, z.bounds.y * sy, z.bounds.w * sx, z.bounds.h * sy);
+        g.fillStyle = hexToRgba(z.color, 0.35);
+        g.fillRect(z.bounds.x * sx, z.bounds.y * sy, z.bounds.w * sx, z.bounds.h * sy);
       }
 
       // 障碍物:树=绿点,石=灰点(按视觉尺寸缩放)
       for (const o of obstacles) {
         if (o.type === 'tree') {
-          mmCtx.fillStyle = '#1a4a1a';
-          mmCtx.fillRect(o.x * sx - 1, o.y * sy - 1, 2.5, 2.5);
+          g.fillStyle = '#1a4a1a';
+          g.fillRect(o.x * sx - k, o.y * sy - k, 2.5 * k, 2.5 * k);
         } else {
-          mmCtx.fillStyle = '#8b8f9c';
-          mmCtx.beginPath();
-          mmCtx.arc(o.x * sx, o.y * sy, Math.max(1.5, o.radius * sx), 0, Math.PI * 2);
-          mmCtx.fill();
+          g.fillStyle = '#8b8f9c';
+          g.beginPath();
+          g.arc(o.x * sx, o.y * sy, Math.max(1.5 * k, o.radius * sx), 0, Math.PI * 2);
+          g.fill();
         }
       }
 
-      // Fog overlay on minimap
+      // Fog overlay
       if (fogExplored) {
         const cw = fogCellSize * sx, ch = fogCellSize * sy;
-        mmCtx.fillStyle = 'rgba(0,0,0,0.88)';
+        g.fillStyle = 'rgba(0,0,0,0.88)';
         for (let row = 0; row < fogRows; row++) {
           for (let col = 0; col < fogCols; col++) {
             if (!isFogBitSet(col, row)) {
-              mmCtx.fillRect(col * cw, row * ch, cw + 0.5, ch + 0.5);
+              g.fillRect(col * cw, row * ch, cw + 0.5, ch + 0.5);
             }
           }
         }
       }
 
       // Viewport rect
-      mmCtx.strokeStyle = 'rgba(255,255,255,0.15)';
-      mmCtx.lineWidth = 1;
-      mmCtx.strokeRect(camera.x * sx, camera.y * sy, canvas.width * sx, canvas.height * sy);
+      g.strokeStyle = 'rgba(255,255,255,0.15)';
+      g.lineWidth = 1;
+      g.strokeRect(camera.x * sx, camera.y * sy, canvas.width * sx, canvas.height * sy);
 
-      // Players
-      // Enemies on minimap (colored by kind)
-      const ENEMY_MM_COLOR = {
-        slime: '#43e1b3', skeleton: '#8b9bb4', demon: '#e84537',
-        orc: '#6fae4a', wraith: '#9d7bd8', golem: '#8a8f9c', dragon: '#e0663a',
-      };
+      // 敌人 / NPC(按种类上色;放大模式下 LLM NPC 高亮为金色菱形 + 名字)
       for (const e of Object.values(enemies)) {
         if (e.isDead) continue;
         const ex = (e.targetX ?? e.x) * sx;
         const ey = (e.targetY ?? e.y) * sy;
-        mmCtx.fillStyle = ENEMY_MM_COLOR[e.kind] || '#ff8800';
-        mmCtx.beginPath();
-        mmCtx.arc(ex, ey, 1.5, 0, Math.PI * 2);
-        mmCtx.fill();
+        if (big && e.llmEnabled) {
+          const r = 5 * (k / 2 + 0.5); // 金色菱形半径
+          g.save();
+          g.translate(ex, ey);
+          g.fillStyle = '#ffd23f';
+          g.strokeStyle = '#5a4300';
+          g.lineWidth = 1;
+          g.beginPath();
+          g.moveTo(0, -r); g.lineTo(r, 0); g.lineTo(0, r); g.lineTo(-r, 0);
+          g.closePath();
+          g.fill();
+          g.stroke();
+          g.restore();
+          const label = e.displayName || e.kind || 'NPC';
+          g.font = '11px system-ui, sans-serif';
+          g.textAlign = 'center';
+          g.textBaseline = 'bottom';
+          g.lineWidth = 3;
+          g.strokeStyle = 'rgba(0,0,0,0.75)';
+          g.strokeText(label, ex, ey - r - 2);
+          g.fillStyle = '#ffe9a8';
+          g.fillText(label, ex, ey - r - 2);
+          if (opts.npcHits) opts.npcHits.push({ id: e.id, sx: ex, sy: ey, r: Math.max(r + 4, 14) });
+          continue;
+        }
+        g.fillStyle = ENEMY_MM_COLOR[e.kind] || '#ff8800';
+        g.beginPath();
+        g.arc(ex, ey, 1.5 * k, 0, Math.PI * 2);
+        g.fill();
       }
 
       // 武器掉落物(按稀有度上色的小点)
       for (const id in drops) {
         const d = drops[id];
-        mmCtx.fillStyle = RARITY_COLOR[d.rarity] || '#b5c6d6';
-        mmCtx.fillRect(d.x * sx - 1, d.y * sy - 1, 2, 2);
+        g.fillStyle = RARITY_COLOR[d.rarity] || '#b5c6d6';
+        g.fillRect(d.x * sx - k, d.y * sy - k, 2 * k, 2 * k);
       }
       // 生命补给包(绿色小点)
       for (const id in healthPacks) {
         const p = healthPacks[id];
-        mmCtx.fillStyle = '#33ff88';
-        mmCtx.fillRect(p.x * sx - 1, p.y * sy - 1, 2, 2);
+        g.fillStyle = '#33ff88';
+        g.fillRect(p.x * sx - k, p.y * sy - k, 2 * k, 2 * k);
       }
 
+      // Players
       for (const [id, p] of Object.entries(players)) {
         if (p.isDead) continue;
         const px = (p.targetX ?? p.x) * sx;
         const py = (p.targetY ?? p.y) * sy;
-        mmCtx.fillStyle = parseInt(id) === myId ? '#4ecca3' : '#e94560';
-        mmCtx.beginPath();
-        mmCtx.arc(px, py, parseInt(id) === myId ? 3 : 2, 0, Math.PI * 2);
-        mmCtx.fill();
+        g.fillStyle = parseInt(id) === myId ? '#4ecca3' : '#e94560';
+        g.beginPath();
+        g.arc(px, py, (parseInt(id) === myId ? 3 : 2) * k, 0, Math.PI * 2);
+        g.fill();
       }
 
       // Border
-      mmCtx.strokeStyle = '#2a5a8a';
-      mmCtx.lineWidth = 1;
-      mmCtx.strokeRect(0, 0, mw, mh);
+      g.strokeStyle = '#2a5a8a';
+      g.lineWidth = 1;
+      g.strokeRect(0, 0, mw, mh);
+    }
+
+    function drawMinimap() {
+      renderMapTo(mmCtx, mmCanvas.width, mmCanvas.height);
+    }
+
+    // ─── 放大世界地图 ──────────────────────────────────────────
+    function openMapModal() {
+      if (mapModalOpen) return;
+      // 按地图宽高比在视口内计算画布尺寸
+      const aspect = mapWidth / mapHeight || 3;
+      const maxW = Math.min(window.innerWidth * 0.92, 1100);
+      const maxH = window.innerHeight * 0.78;
+      let w = maxW, h = w / aspect;
+      if (h > maxH) { h = maxH; w = h * aspect; }
+      bigCanvas.width = Math.round(w);
+      bigCanvas.height = Math.round(h);
+      mapModalOpen = true;
+      bigScrim.classList.add('open');
+      bigEl.classList.add('open');
+      drawExpandedMap();
+    }
+
+    function closeMapModal() {
+      if (!mapModalOpen) return;
+      mapModalOpen = false;
+      bigScrim.classList.remove('open');
+      bigEl.classList.remove('open');
+    }
+
+    function drawExpandedMap() {
+      npcHits.length = 0;
+      renderMapTo(bigCtx, bigCanvas.width, bigCanvas.height, { big: true, npcHits });
     }
 
     // ─── 顶部经验条 ────────────────────────────────────────────
@@ -3989,6 +4160,7 @@
       statsEl.innerHTML = `PING: ${latency}ms  ·  <span style="color:#ffd23f">LV.${myLv}</span>${titleHtml}  ·  PLAYERS: ${Object.keys(players).length}  ·  ENEMIES: ${aliveEnemies}  ·  ${weatherLabel(weather.kind)}  ·  ${timeLabel(dayPhase)}  ·  <span style="color:${wCol}">⚔ ${myW.label}</span>`;
 
       drawMinimap();
+      if (mapModalOpen) drawExpandedMap();
       updateSkillBarCd();
     }
 

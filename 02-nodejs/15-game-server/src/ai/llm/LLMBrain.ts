@@ -178,6 +178,9 @@ export class LLMBrain {
         this.applyA2aState(enemy, directive, snapshot);
         if (snapshot.chatText) {
           this.ensureChatSpeech(snapshot, directive);
+          if (directive.speech) {
+            directive.speech = this.fixSelfAddress(directive.speech, snapshot.npcName, snapshot.chatFrom);
+          }
         }
         enemy.llmDirective = directive;
         if (directive.intent === 'taunt') {
@@ -280,6 +283,19 @@ export class LLMBrain {
       default:
         directive.speech = `……${who},听你吩咐。`;
     }
+  }
+
+  /**
+   * 小模型(qwen3.5:4b 等)常把 prompt 里最醒目的自名当成对玩家的称呼,
+   * 说出「史莱姆贤者,你好!」这类把自己名字安到对方头上的台词 → 纠正为玩家名。
+   * 合法的自我指称(我是XX/我叫XX 等)保留不动。
+   */
+  private fixSelfAddress(speech: string, npcName?: string, chatFrom?: string): string {
+    if (!npcName || !chatFrom || !speech.includes(npcName)) return speech;
+    for (const p of ['我是', '我叫', '我就是', '名为', '自称', '正是', '本']) {
+      if (speech.includes(p + npcName)) return speech; // 自我介绍,合法
+    }
+    return speech.split(npcName).join(chatFrom);
   }
 
   private isPlayerFacingReason(reason: string): boolean {
