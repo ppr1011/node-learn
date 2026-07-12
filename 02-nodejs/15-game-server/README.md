@@ -67,10 +67,13 @@ npm start
 
 ## 文档导航
 
-深度内容按「现有大章 + 代码结构」拆分为 10 篇，每篇都标注了对应的源码模块：
+深度内容按「现有大章 + 代码结构」拆分为多篇，每篇都标注了对应的源码模块：
+
+> 💡 **Java 背景的 Node.js 初学者**：建议从 [00 · 架构导读 + Node.js/Java 对照](docs/00-架构导读与Java对照.md) 开始，它用 Java 概念把整个服务器讲了一遍；再按需读 [13 · 行为树深入](docs/13-行为树深入-Java对照.md)、[14 · LLM 大脑深入](docs/14-LLM大脑深入-Java对照.md) 两篇 Java 对照专题。
 
 | 文档 | 主题 | 关联代码模块 |
 |------|------|--------------|
+| [00 · 架构导读 + Java 对照](docs/00-架构导读与Java对照.md) | 面向 Java 程序员：世界观差异（单线程/异步/事件循环）、整体架构、一条消息的旅程、逐模块 Java 类比、语法速查 | 全局导读（`server.ts`、`core/*`、`network/*`、`systems/*`） |
 | [01 · 游戏后台核心难点](docs/01-核心难点.md) | 实时状态同步、九宫格 AOI、Tick 主循环、协议设计、数据一致性、空间碰撞检测 | `core/AOI.ts`、`core/Obstacle.ts`、`core/GameWorld.ts`、`utils/Timer.ts`、`network/Protocol.ts`、`systems/MovementSystem.ts` |
 | [02 · 工程挑战](docs/02-工程挑战.md) | 高并发连接、网络延迟与抖动、反作弊、热更新、分布式扩展 | `network/Session.ts`、`utils/RateLimiter.ts`、`systems/CombatSystem.ts` |
 | [03 · 服务稳定性](docs/03-服务稳定性.md) | 心跳检测、优雅关停、限流与背压、内存管理、监控告警 | `network/Session.ts`、`network/WebSocketServer.ts`、`server.ts`、`core/GameWorld.ts` |
@@ -83,6 +86,8 @@ npm start
 | [10 · 武器与掉落系统](docs/10-武器与掉落系统.md) | 击杀掉落、加权稀有度、拾取装备、武器化攻击动画、飞行物/震波、CC0 贴图 | `core/Weapon.ts`、`core/WeaponDrop.ts`、`core/GameWorld.ts`、`systems/CombatSystem.ts`、`client/index.html` |
 | [11 · LLM + 行为树 AI](docs/11-LLM行为树.md) | LLM 大脑 + BT 身体、记忆、跟随、寻路、DeepSeek | `ai/llm/*`、`ai/bt/llmNpcTree.ts` |
 | [12 · NPC Agent 趣味增强](docs/12-NPC-Agent趣味增强.md) | 委托任务、关系解锁、传闻、心情、记忆面板 | `ai/agent/*`、`client/index.html` |
+| [13 · 行为树深入 + Java 对照](docs/13-行为树深入-Java对照.md) | 组合模式、success/failure/running 语义、黑板/享元、闭包注入种类差异、LLM 树复用、仇恨转移、完整 Java 骨架、加新行为实操 | `ai/bt/*`、`systems/EnemyAISystem.ts`、`core/Enemy.ts` |
+| [14 · LLM 大脑深入 + Java 对照](docs/14-LLM大脑深入-Java对照.md) | 大脑/身体分离、异步调度器、pending 防重入、省 token 三道门、Provider 策略模式 + 三级降级、防御性解析、服务端权威 guards、记忆系统 | `ai/llm/*`、`systems/EnemyAISystem.ts` |
 
 ---
 

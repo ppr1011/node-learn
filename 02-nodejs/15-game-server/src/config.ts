@@ -83,6 +83,10 @@ export const GameConfig = {
   HP_PACK_PICKUP_RADIUS: 30, // 走到距包中心多近算拾取
   HP_PACK_PICKUP_GRACE: 500, // 刷出后 500ms 内不可拾取(让包先在地上「亮相」)
 
+  // 避难所门口篝火(站在篝火半径内周期性回血,直到满血;几何尺寸见 core/Shelter.ts)
+  CAMPFIRE_HEAL: 6,            // 每次回复血量
+  CAMPFIRE_HEAL_INTERVAL: 1000, // 每 1s 回一次(飘一次绿字)
+
   // 迷雾探索
   FOG_CELL_SIZE: 100,       // 探索网格粒度(px)
   FOG_REVEAL_RADIUS: 400,   // 玩家视野揭雾半径(px)

@@ -32,6 +32,7 @@ import { NullBackend } from '../persistence/NullBackend';
 import { ExplorationMap } from './ExplorationMap';
 import { DEFAULT_SKILL_IDS } from './Skills';
 import { Zone, ZONES, ZONE_ENEMY_COUNT, zonePublicState } from './Zone';
+import { SHELTERS, isInAnyShelter, nearCampfire, shelterPublicState } from './Shelter';
 
 /** 击杀不同敌人的掉落幸运系数(越高越易出稀有/史诗/传说);再乘所在区域的 dropLuck */
 const DROP_LUCK: Record<string, number> = {
@@ -45,6 +46,7 @@ export class GameWorld {
   readonly drops: Map<number, WeaponDrop> = new Map();
   readonly healthPacks: Map<number, HealthPack> = new Map();
   private nextHpPackAt: number = 0;
+  private nextCampfireHealAt: Map<number, number> = new Map(); // 玩家id → 下次可被篝火回血的时刻
   readonly playerStore: PlayerStore; // 角色存档:掉线重连 + 重启恢复位置/装备(Redis 热层 + SQLite 冷层)
   readonly aoi: AOIManager;
   readonly spawner: Spawner;
@@ -122,7 +124,9 @@ export class GameWorld {
       );
 
     const spawned = this.spawner.generateStatic(GameConfig.OBSTACLE_SEED);
-    this.obstacles = (spawned.get('obstacle') as ObstacleSpawn[] | undefined) ?? [];
+    // 清空避难所安全圈内的障碍物:让圈内可自由走动(安全落脚点不该被树石堵住)
+    this.obstacles = ((spawned.get('obstacle') as ObstacleSpawn[] | undefined) ?? [])
+      .filter((o) => !isInAnyShelter(o.x, o.y));
     this.obstacleGrid = new ObstacleGrid(this.obstacles, GameConfig.OBSTACLE_GRID_CELL_SIZE);
 
     // 初始天气(dynamic:运行时随机,服务端权威)
@@ -247,6 +251,7 @@ export class GameWorld {
       mapWidth: GameConfig.MAP_WIDTH,
       mapHeight: GameConfig.MAP_HEIGHT,
       zones: ZONES.map(zonePublicState),
+      shelters: SHELTERS.map(shelterPublicState),
       obstacles: this.obstacles,
       enemies: [...this.enemies.values()].map(e => e.toPublicState()),
       drops: [...this.drops.values()].map(d => d.toPublicState()),
@@ -283,6 +288,7 @@ export class GameWorld {
     this.aoi.removePlayer(player);
     this.players.delete(player.id);
     this.skills.removePlayer(player.id);
+    this.nextCampfireHealAt.delete(player.id);
 
     // 通知所有能看到该玩家的人
     for (const otherId of player.visiblePlayers) {
@@ -318,6 +324,7 @@ export class GameWorld {
     // 掉落物:拾取判定 + TTL 清理
     this.updateDrops(Date.now());
     this.updateHealthPacks(Date.now());
+    this.updateCampfires(Date.now());
 
     // 广播状态更新给各自视野内的玩家
     this.broadcastStates();
@@ -421,6 +428,37 @@ export class GameWorld {
     logger.info(`HealthPack spawned @ (${Math.round(pos.x)}, ${Math.round(pos.y)}) zone=${zone.id}`);
   }
 
+  /**
+   * 每 tick:站在避难所门口篝火半径内的玩家周期性回血(直到满血)。
+   * 复用 s_heal 广播(casterId=null → 客户端只飘绿字、不弹系统消息);
+   * 用 nextCampfireHealAt 按玩家节流到 ~1s 一次,离开篝火即清除条目(便于再入场立即回血)。
+   */
+  private updateCampfires(now: number): void {
+    for (const player of this.players.values()) {
+      if (player.isDead || !nearCampfire(player.position.x, player.position.y) || player.hp >= player.maxHp) {
+        this.nextCampfireHealAt.delete(player.id);
+        continue;
+      }
+      const next = this.nextCampfireHealAt.get(player.id) ?? 0;
+      if (now < next) continue;
+      const amount = player.heal(GameConfig.CAMPFIRE_HEAL);
+      this.nextCampfireHealAt.set(player.id, now + GameConfig.CAMPFIRE_HEAL_INTERVAL);
+      if (amount <= 0) continue;
+      const msg = {
+        targetKind: 'player',
+        targetId: player.id,
+        hp: player.hp,
+        maxHp: player.maxHp,
+        amount,
+        casterId: null, // 无施法者 → 客户端不弹「治疗」系统消息,仅飘绿字
+      };
+      player.session.send(MsgType.HEAL, msg);
+      for (const other of this.aoi.getNearbyPlayers(player)) {
+        if (other.id !== player.id) other.session.send(MsgType.HEAL, msg);
+      }
+    }
+  }
+
   private broadcastStates(): void {
     // Build enemy state snapshot once (same for all players)
     const enemyStates = [...this.enemies.values()].map(e => e.toPublicState());
@@ -506,6 +544,8 @@ export class GameWorld {
     for (let i = 0; i < 30; i++) {
       const x = zx + padX + Math.random() * (w - padX * 2);
       const y = zy + padY + Math.random() * (h - padY * 2);
+      // 避开避难所安全圈:刷怪 / 补给包 / 复活 / 出生点都不落进圈内
+      if (isInAnyShelter(x, y)) continue;
       const blocked = this.obstacleGrid.queryNearby(x, y, radius).some(o => {
         return Math.hypot(x - o.x, y - o.y) < o.radius + radius;
       });

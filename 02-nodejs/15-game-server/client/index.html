@@ -408,6 +408,26 @@
       box-shadow: 0 0 24px rgba(78,204,163,0.4);
       transform: translateY(-1px);
     }
+    /* 次要按钮:新开一个角色(不动/不踢已记住的角色,本窗口独立存档) */
+    #new-char-btn {
+      display: block;
+      margin: 10px auto 0;
+      background: transparent;
+      color: #7fb0d8;
+      border: 1px solid #2a5a8a;
+      padding: 8px 28px;
+      font-size: 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: 'Courier New', monospace;
+      letter-spacing: 2px;
+      transition: all 0.2s;
+    }
+    #new-char-btn:hover {
+      border-color: #4ecca3;
+      color: #cfe;
+      box-shadow: 0 0 16px rgba(78,204,163,0.2);
+    }
     #login-box p {
       margin-top: 18px;
       color: #446;
@@ -638,6 +658,7 @@
       <div class="subtitle">▸ ONLINE ADVENTURE ◂</div>
       <input id="name-input" placeholder="输入你的名字" maxlength="16" />
       <button id="join-btn">▶ 进入游戏</button>
+      <button id="new-char-btn">＋ 新开一个角色</button>
       <div id="remember-hint">
         ⟳ 上次的角色 · <span id="remember-name"></span><br>
         <span class="rh-sub">将恢复上次的位置与装备</span>
@@ -693,9 +714,13 @@
     }
 
     // 身份存储路由:主标签/具名分身落地 localStorage,副标签落地(标签级)sessionStorage
-    const identity = explicitSlot
+    // 用 let:开始页「新开角色」会把本标签切换到独立 session 身份(见 newCharBtn)
+    // 若本标签已通过「新开角色」建立过 session 身份(sessionStorage 有 token),即使是主标签也优先沿用它,
+    // 这样刷新后仍是那个新角色,而不会退回抢占已记住的主角色。
+    const hasSessionChar = !explicitSlot && !explicitToken && !!sessionStorage.getItem('mmo_token');
+    let identity = explicitSlot
       ? { store: localStorage, tokenKey: `mmo_token:${explicitSlot}`, nameKey: `mmo_name:${explicitSlot}` }
-      : isPrimary
+      : (isPrimary && !hasSessionChar)
         ? { store: localStorage, tokenKey: 'mmo_token', nameKey: 'mmo_name' }
         : { store: sessionStorage, tokenKey: 'mmo_token', nameKey: 'mmo_name' };
 
@@ -709,6 +734,8 @@
     let mapWidth = 12000;
     let mapHeight = 4000;
     let zones = [];            // 服务端下发的难度带 [{id,name,tier,recommendedLevel,bounds,color}]
+    let shelters = [];         // 服务端下发的避难所 [{id,zoneId,name,x,y,radius,campfire,color}]
+    let inShelterId = -1;      // 「我」当前所在避难所 id(用于进/出圈系统提示)
     let currentZoneId = -1;    // 玩家当前所在带(用于进带横幅切换判定)
     let zoneBanner = null;     // { text, sub, color, t } 进带横幅,t 从 1 递减到 0 淡出
     let camera = { x: 0, y: 0 };
@@ -725,7 +752,9 @@
     let pathfinder = null; // 网格 A* 寻路(见 pathfind.js)
     const autoNav = {
       active: false,
+      mode: 'npc',        // 'npc' 追踪移动的 LLM NPC(按 id 重定位) | 'point' 走向固定坐标(如避难所)
       targetId: null,
+      goal: null,         // point 模式的目标坐标 { x, y }
       targetName: '',
       path: null,
       pathIdx: 0,
@@ -738,6 +767,7 @@
     };
     let mapModalOpen = false; // 放大世界地图是否打开
     let npcHits = [];         // 放大地图上 NPC 的屏幕命中框 { id, sx, sy, r }
+    let shelterHits = [];     // 放大地图上避难所的屏幕命中框 { x, y, name, sx, sy, r }(点击寻路)
     let enemies = {};     // id → enemy state (from server)
     const speechBubbles = new Map(); // entityId → { text, expiresAt } (NPC 用负 id)
     let drops = {};       // id → 地面武器掉落物 { id, kind, rarity, x, y }
@@ -754,6 +784,7 @@
     let skillPreviewTimer = null;
     let skillAnims = []; // 技能特效动画 { kind, x, y, t, dur, ... }
     let frame = 0;        // 渲染帧计数(掉落物浮动/光环脉动用)
+    let showColliders = false; // 调试:叠加显示障碍物碰撞圆(G 键切换)
     let weather = { kind: 'clear', intensity: 0 }; // 服务端权威下发的全局天气(仅 kind + intensity)
     let dayPhase = 'day'; // 服务端权威下发的昼夜相位(dawn/day/dusk/night,功能7)
     let lastTime = 0;
@@ -787,6 +818,7 @@
     const loginOverlay = document.getElementById('login-overlay');
     const nameInput  = document.getElementById('name-input');
     const joinBtn    = document.getElementById('join-btn');
+    const newCharBtn = document.getElementById('new-char-btn');
     const rememberHint = document.getElementById('remember-hint');
     const rememberName = document.getElementById('remember-name');
     const resetCharBtn = document.getElementById('reset-char');
@@ -950,6 +982,188 @@
       addSysMsg(`进入区域:${z.name}(推荐等级 ${z.recommendedLevel})`);
     }
 
+    // 圈心地标小屋:程序化 2.5D 立体木屋(锚点=落地中心,光从左上,屋顶用避难所色染色)。
+    // 可见 4 个面(正面墙 + 右侧墙 + 左/右屋顶坡)→ 与树/巨砾同一套伪 3D 立绘范式。
+    function drawHut(cx, cy, color) {
+      const HW = 46, WH = 42, d = 30, RH = 34, ov = 10;
+      const darken = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgb(${Math.max(0, (n >> 16) - a)},${Math.max(0, ((n >> 8) & 255) - a)},${Math.max(0, (n & 255) - a)})`; };
+      const poly = (pts, fill) => {
+        ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+      };
+      // 关键点
+      const FBL = [cx - HW, cy], FBR = [cx + HW, cy];
+      const FTL = [cx - HW, cy - WH], FTR = [cx + HW, cy - WH];
+      const BBR = [cx + HW + d, cy - d * 0.5], BTR = [cx + HW + d, cy - WH - d * 0.5];
+      const FA = [cx, cy - WH - RH], BA = [cx + d, cy - WH - RH - d * 0.5];
+      const eaveY = cy - WH + 2;
+      const ELF = [cx - HW - ov, eaveY], ERF = [cx + HW + ov, eaveY];
+      const ELB = [cx - HW - ov + d, eaveY - d * 0.5], ERB = [cx + HW + ov + d, eaveY - d * 0.5];
+
+      ctx.save();
+      // 地面阴影
+      ctx.globalAlpha = 0.28; ctx.fillStyle = '#000';
+      ctx.beginPath(); ctx.ellipse(cx + d * 0.3, cy + 3, HW + d * 0.6, 12, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // 右侧墙(背光,最暗)
+      poly([FBR, BBR, BTR, FTR], '#6a4c2e');
+      // 屋顶:右坡(背光)→ 左坡(受光),避难所色染色
+      poly([FA, ERF, ERB, BA], darken(color, 45));
+      poly([FA, ELF, ELB, BA], lighten(color, 30));
+      // 屋脊高光线
+      ctx.strokeStyle = lighten(color, 70); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(FA[0], FA[1]); ctx.lineTo(BA[0], BA[1]); ctx.stroke();
+
+      // 正面墙(受光,横向木纹渐变)
+      const wg = ctx.createLinearGradient(FBL[0], 0, FBR[0], 0);
+      wg.addColorStop(0, '#c39a63'); wg.addColorStop(1, '#9a6f3f');
+      poly([FBL, FBR, FTR, FTL], wg);
+      // 正面山墙三角(在屋顶之前 → 挡住屋顶正中,符合前后关系)
+      poly([FTL, FTR, FA], '#b98d55');
+      // 木板横纹
+      ctx.strokeStyle = 'rgba(90,60,30,0.4)'; ctx.lineWidth = 1;
+      for (let i = 1; i <= 3; i++) { const y = cy - (WH / 4) * i; ctx.beginPath(); ctx.moveTo(FBL[0] + 2, y); ctx.lineTo(FBR[0] - 2, y); ctx.stroke(); }
+
+      // 木门(拱顶)
+      const dw = 20, dh = 26, dx0 = cx - dw / 2;
+      ctx.fillStyle = '#4a3018';
+      ctx.beginPath();
+      ctx.moveTo(dx0, cy); ctx.lineTo(dx0, cy - dh + dw / 2);
+      ctx.arc(cx, cy - dh + dw / 2, dw / 2, Math.PI, 0);
+      ctx.lineTo(dx0 + dw, cy); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = lighten(color, 10); ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = '#e8c060'; ctx.beginPath(); ctx.arc(cx + dw / 2 - 4, cy - dh / 2, 1.8, 0, Math.PI * 2); ctx.fill();
+
+      // 暖光小窗(呼应篝火主题:安全/温暖)
+      const wx = cx + HW * 0.5, wy = cy - WH * 0.62, ws = 13;
+      ctx.fillStyle = '#5a3a1e'; ctx.fillRect(wx - ws / 2 - 2, wy - ws / 2 - 2, ws + 4, ws + 4);
+      const glow = ctx.createRadialGradient(wx, wy, 1, wx, wy, ws);
+      glow.addColorStop(0, 'rgba(255,220,140,0.98)'); glow.addColorStop(1, 'rgba(255,180,80,0.75)');
+      ctx.fillStyle = glow; ctx.fillRect(wx - ws / 2, wy - ws / 2, ws, ws);
+      ctx.strokeStyle = '#5a3a1e'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(wx, wy - ws / 2); ctx.lineTo(wx, wy + ws / 2); ctx.moveTo(wx - ws / 2, wy); ctx.lineTo(wx + ws / 2, wy); ctx.stroke();
+
+      // 轮廓描边(勾清立体边)
+      ctx.strokeStyle = 'rgba(30,20,10,0.55)'; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(FBL[0], FBL[1]); ctx.lineTo(FTL[0], FTL[1]); ctx.lineTo(FA[0], FA[1]); ctx.lineTo(FTR[0], FTR[1]); ctx.lineTo(BTR[0], BTR[1]); ctx.lineTo(BBR[0], BBR[1]); ctx.lineTo(FBR[0], FBR[1]); ctx.closePath();
+      ctx.stroke();
+      ctx.restore();
+      return cy - WH - RH; // 屋顶最高点 Y(供名牌定位)
+    }
+
+    // ─── 避难所(Shelter)+ 门口篝火 ──────────────────────────────
+    // 安全圈:地面层的带色半透明填充 + 虚线圆环 + 圈心标签(在装饰物/实体之下)
+    function drawShelters() {
+      if (!shelters.length) return;
+      for (const s of shelters) {
+        const sx = s.x - camera.x, sy = s.y - camera.y;
+        if (!isVisible(s.x, s.y, s.radius + 40)) continue;
+        // 安全圈内的暖色地面(径向渐变,内亮外淡)
+        const gr = ctx.createRadialGradient(sx, sy, s.radius * 0.2, sx, sy, s.radius);
+        gr.addColorStop(0, hexToRgba(s.color, 0.18));
+        gr.addColorStop(1, hexToRgba(s.color, 0.04));
+        ctx.fillStyle = gr;
+        ctx.beginPath(); ctx.arc(sx, sy, s.radius, 0, Math.PI * 2); ctx.fill();
+        // 虚线安全边界
+        ctx.save();
+        ctx.setLineDash([16, 12]);
+        ctx.lineDashOffset = -(frame * 0.4);
+        ctx.strokeStyle = hexToRgba(s.color, 0.7);
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(sx, sy, s.radius, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+        // 圈心地标:程序化 2.5D 立体木屋(与树/巨砾同视角;屋顶用避难所色染色)
+        const roofTopY = drawHut(sx, sy, s.color);
+        const labelTopY = roofTopY - 14; // 名牌基线(屋顶之上)
+        // 名牌 + 安全提示(小屋上方)
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.globalAlpha = 0.6;
+        ctx.fillStyle = s.color;
+        ctx.font = 'bold 14px "Courier New", monospace';
+        ctx.fillText('🛡 ' + (s.name || '避难所'), sx, labelTopY);
+        ctx.globalAlpha = 0.4;
+        ctx.fillStyle = '#e8eefc';
+        ctx.font = 'bold 12px "Courier New", monospace';
+        ctx.fillText('SAFE · 怪物止步', sx, labelTopY + 15);
+        ctx.restore();
+      }
+    }
+
+    // 门口篝火:回血范围环 + 石圈底座 + 跳动火焰 + 暖色光晕(地面层,可被玩家覆盖)
+    function drawCampfires() {
+      if (!shelters.length) return;
+      for (const s of shelters) {
+        const c = s.campfire;
+        if (!isVisible(c.x, c.y, c.radius + 20)) continue;
+        const sx = Math.round(c.x - camera.x), sy = Math.round(c.y - camera.y);
+        const flick = 0.75 + 0.25 * Math.sin(frame * 0.35 + s.id) + 0.1 * Math.sin(frame * 0.9 + s.id * 2);
+        // 回血范围环(淡)
+        ctx.save();
+        ctx.setLineDash([6, 8]);
+        ctx.strokeStyle = 'rgba(255,170,80,0.28)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(sx, sy, c.radius, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+        // 地面阴影
+        ctx.save(); ctx.globalAlpha = 0.28; ctx.fillStyle = '#000';
+        ctx.beginPath(); ctx.ellipse(sx, sy + 6, 16, 6, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+        // 暖色光晕(随火焰闪烁缩放)
+        const glowR = 46 * flick;
+        const glow = ctx.createRadialGradient(sx, sy - 4, 4, sx, sy - 4, glowR);
+        glow.addColorStop(0, 'rgba(255,180,90,0.55)');
+        glow.addColorStop(1, 'transparent');
+        ctx.fillStyle = glow;
+        ctx.beginPath(); ctx.arc(sx, sy - 4, glowR, 0, Math.PI * 2); ctx.fill();
+        // 石圈底座
+        ctx.fillStyle = '#6b6f7a';
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2;
+          const rx = sx + Math.cos(a) * 14, ry = sy + 6 + Math.sin(a) * 6;
+          ctx.beginPath(); ctx.arc(rx, ry, 4, 0, Math.PI * 2); ctx.fill();
+        }
+        // 木柴
+        ctx.strokeStyle = '#5a3a1e'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(sx - 9, sy + 6); ctx.lineTo(sx + 9, sy + 1); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(sx - 9, sy + 1); ctx.lineTo(sx + 9, sy + 6); ctx.stroke();
+        // 火焰(两层:外橙内黄,高度随闪烁)
+        const h = 22 * flick;
+        ctx.fillStyle = '#ff7a1a';
+        ctx.beginPath();
+        ctx.moveTo(sx, sy - h); ctx.quadraticCurveTo(sx + 10, sy - h * 0.4, sx + 6, sy);
+        ctx.lineTo(sx - 6, sy); ctx.quadraticCurveTo(sx - 10, sy - h * 0.4, sx, sy - h);
+        ctx.fill();
+        ctx.fillStyle = '#ffd23f';
+        ctx.beginPath();
+        ctx.moveTo(sx, sy - h * 0.6); ctx.quadraticCurveTo(sx + 5, sy - h * 0.25, sx + 3, sy);
+        ctx.lineTo(sx - 3, sy); ctx.quadraticCurveTo(sx - 5, sy - h * 0.25, sx, sy - h * 0.6);
+        ctx.fill();
+        // 偶发火星
+        if (Math.random() < 0.15)
+          spawnParticles(c.x, c.y - 10, 1, { spdMin: 0.3, spdMax: 1.4, szMin: 1, szMax: 2, color: ['#ffcc66', '#ff8844', '#fff'], decay: 0.05, gravity: -0.06 });
+      }
+    }
+
+    // 每帧检测「我」进/出避难所安全圈,切换时弹系统消息
+    function updateShelterState() {
+      const me = players[myId];
+      if (!me || !shelters.length) return;
+      const px = me.targetX ?? me.x, py = me.targetY ?? me.y;
+      let cur = -1;
+      for (const s of shelters) {
+        if (Math.hypot(px - s.x, py - s.y) <= s.radius) { cur = s.id; break; }
+      }
+      if (cur === inShelterId) return;
+      const first = inShelterId === -1 && cur === -1;
+      inShelterId = cur;
+      if (first) return;
+      if (cur >= 0) addSysMsg('⛺ 已进入避难所 · 安全,怪物不会追进来');
+      else addSysMsg('离开了避难所,当心怪物');
+    }
+
     // ─── Fog of War (迷雾探索) ─────────────────────────────────
     function isFogBitSet(col, row) {
       const idx = row * fogCols + col;
@@ -976,12 +1190,13 @@
       fogDirty = true;
     }
 
-    function fogRevealAround(wx, wy) {
+    function fogRevealAround(wx, wy, radius) {
       if (!fogExplored) return;
+      const r = radius || fogRevealRadius;   // 允许传入自适应视野半径(竖屏/大屏照亮更大范围)
       const centerCol = Math.floor(wx / fogCellSize);
       const centerRow = Math.floor(wy / fogCellSize);
-      const cellR = Math.ceil(fogRevealRadius / fogCellSize);
-      const rSq = fogRevealRadius * fogRevealRadius;
+      const cellR = Math.ceil(r / fogCellSize);
+      const rSq = r * r;
       for (let dr = -cellR; dr <= cellR; dr++) {
         for (let dc = -cellR; dc <= cellR; dc++) {
           const col = centerCol + dc, row = centerRow + dr;
@@ -999,9 +1214,12 @@
     }
 
     function drawWarFog(W, H) {
-      if (!fogExplored) return;
       const me = players[myId];
-      if (me) fogRevealAround(me.targetX ?? me.x, me.targetY ?? me.y);
+      // 未连接 / 被踢 / 无本地玩家时不画迷雾:否则整屏被涂黑,地图人物全看不见(断线只剩雪)
+      if (!fogExplored || !me) return;
+      // 视野半径随视口对角线自适应:竖屏/大屏也能照亮足够范围(下限为服务端下发的 fogRevealRadius)
+      const viewR = Math.max(fogRevealRadius, Math.hypot(W, H) * 0.42);
+      fogRevealAround(me.targetX ?? me.x, me.targetY ?? me.y, viewR);
 
       // 仅在相机移动或格子变化时重绘 off-screen canvas
       if (fogDirty || Math.abs(camera.x - lastFogCamX) > 3 || Math.abs(camera.y - lastFogCamY) > 3) {
@@ -1026,7 +1244,10 @@
             const sx = col * fogCellSize + fogCellSize / 2 - camera.x;
             const sy = row * fogCellSize + fogCellSize / 2 - camera.y;
             const r = fogCellSize * 0.72;
-            fogCtx.fillStyle = 'rgba(255,255,255,0.75)';
+            // alpha 必须为 1:destination-out 下,相邻格的揭示圆会重叠,若用半透明(如 0.75)
+            // 重叠处会被"挖"两次(0.75→0.9375)→ 比单覆盖的格心更亮,形成满屏的花瓣/菱形格纹。
+            // 用不透明白则重叠幂等(并集一次性挖穿),已探索区域均匀透亮,与小地图的二值迷雾一致。
+            fogCtx.fillStyle = 'rgba(255,255,255,1)';
             fogCtx.beginPath();
             fogCtx.arc(sx, sy, r, 0, Math.PI * 2);
             fogCtx.fill();
@@ -1037,7 +1258,7 @@
         if (me) {
           const px = (me.targetX ?? me.x) - camera.x;
           const py = (me.targetY ?? me.y) - camera.y;
-          const vr = fogRevealRadius;
+          const vr = viewR;
           const vGrad = fogCtx.createRadialGradient(px, py, 0, px, py, vr);
           vGrad.addColorStop(0, 'rgba(255,255,255,1)');
           vGrad.addColorStop(0.7, 'rgba(255,255,255,1)');
@@ -1065,9 +1286,11 @@
         rememberName.textContent = currentName;
         rememberHint.style.display = 'block';
         joinBtn.textContent = '▶ 继续冒险';
+        newCharBtn.style.display = 'block';   // 有旧角色时才提供「新开一个角色」
       } else {
         rememberHint.style.display = 'none';
         joinBtn.textContent = '▶ 进入游戏';
+        newCharBtn.style.display = 'none';     // 首次进入,「进入游戏」本身就是新角色
       }
     }
     initLogin();
@@ -1093,6 +1316,22 @@
       connect(name);
       loginOverlay.style.display = 'none';
     };
+
+    // 新开一个角色:切到本标签页独立身份(sessionStorage),用空 token 注册全新角色。
+    // 不动、也不踢 localStorage 里已记住的主角色;本窗口存档随标签存活(刷新不丢,关闭回收)。
+    newCharBtn.onclick = () => {
+      identity = { store: sessionStorage, tokenKey: 'mmo_token', nameKey: 'mmo_name' };
+      myToken = null;                 // 无 token → 服务端分配全新角色
+      kicked = false;
+      reconnectAttempts = 0;
+      const name = nameInput.value.trim() || 'Hero';
+      currentName = name;
+      identity.store.setItem(identity.nameKey, name);
+      const notice = document.getElementById('kick-notice');
+      if (notice) notice.remove();    // 清掉「已在其它窗口」的提示
+      connect(name);
+      loginOverlay.style.display = 'none';
+    };
     nameInput.addEventListener('keydown', e => {
       if (e.key === 'Enter') joinBtn.click();
     });
@@ -1115,29 +1354,32 @@
 
       ws.onclose = () => {
         connected = false;
-        statusEl.textContent = '○ DISCONNECTED';
-        scheduleReconnect();
+        statusEl.textContent = kicked ? '○ KICKED' : '○ DISCONNECTED';
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        // 断线不再后台静默重连(会卡在死画面),直接回到开始页面让用户重新进入
+        if (!kicked) showStartPage('● 与服务器断开连接,点击下方按钮重新进入');
       };
 
       ws.onerror = () => { statusEl.textContent = '✕ ERROR'; };
     }
 
-    // 掉线自动重连:带同一 token 回到共享世界,服务端把角色恢复到掉线前的位置
-    function scheduleReconnect() {
-      if (reconnectTimer || !currentName || kicked) return;
-      reconnectAttempts++;
-      if (reconnectAttempts > 30) {
-        addSysMsg('重连失败,请刷新页面重试');
-        statusEl.textContent = '○ OFFLINE';
-        return;
+    // 断线/被踢:直接回到开始页面。带 token 点「继续冒险」即恢复存档并重新接管本窗口
+    function showStartPage(reason) {
+      const box = document.getElementById('login-box');
+      let notice = document.getElementById('kick-notice');
+      if (reason) {
+        if (!notice) {
+          notice = document.createElement('div');
+          notice.id = 'kick-notice';
+          notice.style.cssText = 'margin:12px 0;padding:10px;border:1px solid #e94560;color:#ff97a8;font-size:12px;line-height:1.6;border-radius:6px;background:rgba(233,69,96,0.12)';
+          box.insertBefore(notice, joinBtn);
+        }
+        notice.innerHTML = reason;
+      } else if (notice) {
+        notice.remove();
       }
-      const delay = Math.min(5000, 1000 * reconnectAttempts);
-      addSysMsg(`与服务器断开,${(delay / 1000)}s 后尝试重连 (#${reconnectAttempts})...`);
-      statusEl.textContent = `↻ RECONNECTING (${reconnectAttempts})`;
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        connect(currentName);
-      }, delay);
+      joinBtn.textContent = myToken ? '▶ 继续冒险' : '▶ 进入游戏';
+      loginOverlay.style.display = 'flex';
     }
 
     function handleMessage(msg) {
@@ -1154,6 +1396,8 @@
           mapWidth  = msg.data.mapWidth;
           mapHeight = msg.data.mapHeight;
           zones = msg.data.zones || [];
+          shelters = msg.data.shelters || [];
+          inShelterId = -1; // 重置:下一帧据玩家位置重新判定进/出避难所
           currentZoneId = -1; // 重置:下一帧据玩家位置重新判定并弹进带横幅
           players = {};   // 清空旧快照:重连时避免残留其他玩家的「幽灵」
           players[myId] = msg.data.self;
@@ -1341,9 +1585,15 @@
             if (en) { en.hp = d.hp; tx = en.targetX ?? en.x; ty = en.targetY ?? en.y; }
           }
           if (tx != null) {
-            spawnRing(tx, ty, '#33ff88', 18);
-            spawnDmgNumText(tx, ty - 10, `+${d.amount}`, '#33ff88');
-            spawnParticles(tx, ty, 12, { spdMin: 0.5, spdMax: 2.5, szMin: 2, szMax: 4, color: ['#33ff88', '#aaffcc', '#fff'], decay: 0.04 });
+            // 环境回血(篝火等,casterId=null):每秒一次,若也放大绿圈+粒子会在人物上刷屏成一个「圈」。
+            // 只飘个小数字即可;主动技能治疗(有 casterId)才播完整光环+粒子。
+            if (d.casterId == null) {
+              spawnDmgNumText(tx, ty - 10, `+${d.amount}`, '#33ff88');
+            } else {
+              spawnRing(tx, ty, '#33ff88', 18);
+              spawnDmgNumText(tx, ty - 10, `+${d.amount}`, '#33ff88');
+              spawnParticles(tx, ty, 12, { spdMin: 0.5, spdMax: 2.5, szMin: 2, szMax: 4, color: ['#33ff88', '#aaffcc', '#fff'], decay: 0.04 });
+            }
           }
           if (d.casterId === myId) addSysMsg(`✚ 治疗 +${d.amount} HP`);
           break;
@@ -1433,7 +1683,9 @@
             kicked = true;
             if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
             statusEl.textContent = '○ KICKED';
-            addSysMsg('该角色已在另一个窗口登录,此窗口已停止重连。刷新本页可重新接管。');
+            addSysMsg('该角色已在另一个窗口登录,已返回开始页面。');
+            // 直接回到开始页面并说明原因,点「继续冒险」即重新接管本窗口
+            showStartPage('⚠ 该角色已在另一个窗口 / 标签页打开<br>关闭其它窗口后,点下方按钮重新进入并接管');
           }
           break;
       }
@@ -1453,6 +1705,8 @@
       autoNav.path = null;
       autoNav.pathIdx = 0;
       autoNav.targetId = null;
+      autoNav.goal = null;
+      autoNav.mode = 'npc';
       if (reason) addSysMsg(reason);
       haltPlayerMovement();
     }
@@ -1530,6 +1784,8 @@
         return;
       }
       autoNav.active = true;
+      autoNav.mode = 'npc';
+      autoNav.goal = null;
       autoNav.targetId = enemy.id;
       autoNav.targetName = enemy.displayName || enemy.kind;
       if (!planNavPath(tx, ty)) {
@@ -1540,21 +1796,52 @@
       addSysMsg(`自动寻路 → ${autoNav.targetName}（点击移动或 WASD 取消）`);
     }
 
+    /** 走向固定坐标的自动寻路(避难所等静态目标;不追踪移动实体) */
+    function startAutoNavToPoint(x, y, name) {
+      const me = players[myId];
+      if (!me || me.isDead) return;
+      const px = me.x ?? me.targetX ?? 0;
+      const py = me.y ?? me.targetY ?? 0;
+      if (Math.hypot(x - px, y - py) < autoNav.arriveDist) {
+        addSysMsg(`已在${name}附近`);
+        return;
+      }
+      autoNav.active = true;
+      autoNav.mode = 'point';
+      autoNav.targetId = null;
+      autoNav.goal = { x, y };
+      autoNav.targetName = name;
+      if (!planNavPath(x, y)) {
+        autoNav.path = [{ x, y }];
+        autoNav.pathIdx = 0;
+        autoNav.lastPlan = Date.now();
+      }
+      addSysMsg(`自动寻路 → ${name}（点击移动或 WASD 取消）`);
+    }
+
     function tickAutoNav() {
       if (!autoNav.active) return null;
       const me = players[myId];
       if (!me || me.isDead) { stopAutoNav(); return null; }
 
-      const target = enemies[autoNav.targetId];
-      if (!target || target.isDead || !target.llmEnabled) {
-        stopAutoNav('寻路目标已消失');
-        return null;
-      }
-
       const px = me.x ?? me.targetX ?? 0;
       const py = me.y ?? me.targetY ?? 0;
-      const tx = target.x ?? target.targetX ?? 0;
-      const ty = target.y ?? target.targetY ?? 0;
+
+      // 目标坐标按模式解析:point 走固定点;npc 追踪仍存活的 LLM NPC(会移动 → 每 tick 重取位置)
+      let tx, ty;
+      if (autoNav.mode === 'point') {
+        if (!autoNav.goal) { stopAutoNav(); return null; }
+        tx = autoNav.goal.x;
+        ty = autoNav.goal.y;
+      } else {
+        const target = enemies[autoNav.targetId];
+        if (!target || target.isDead || !target.llmEnabled) {
+          stopAutoNav('寻路目标已消失');
+          return null;
+        }
+        tx = target.x ?? target.targetX ?? 0;
+        ty = target.y ?? target.targetY ?? 0;
+      }
 
       if (Math.hypot(tx - px, ty - py) < autoNav.arriveDist) {
         stopAutoNav(`已到达 ${autoNav.targetName} 附近`);
@@ -2034,6 +2321,7 @@
       // getBoundingClientRect 尺寸即 CSS 尺寸,这里 canvas 无额外 CSS 缩放,故 1:1
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
+      // 优先命中 NPC(点位更小更精确);未命中 NPC 再判避难所
       let best = null, bestD = Infinity;
       for (const hit of npcHits) {
         const d = Math.hypot(cx - hit.sx, cy - hit.sy);
@@ -2042,7 +2330,14 @@
       if (best) {
         const npc = enemies[best.id];
         if (npc) { startAutoNavToNpc(npc); closeMapModal(); }
+        return;
       }
+      let bestS = null, bestSD = Infinity;
+      for (const hit of shelterHits) {
+        const d = Math.hypot(cx - hit.sx, cy - hit.sy);
+        if (d <= hit.r && d < bestSD) { bestSD = d; bestS = hit; }
+      }
+      if (bestS) { startAutoNavToPoint(bestS.x, bestS.y, bestS.name); closeMapModal(); }
     });
 
     function updateQuestHud(data) {
@@ -2262,6 +2557,11 @@
       if (k === 'k') { setSkillPreview('fireball'); castSkillAtTarget('fireball'); return; }
       if (k === 'l') { setSkillPreview('meteor'); castSkill('meteor', meteorCastPoint()); return; }
       if (k === 'i') { toggleSkillLock(); return; }
+      if (k === 'g') {
+        showColliders = !showColliders;
+        addSysMsg(`碰撞圈可视化: ${showColliders ? '开' : '关'}`);
+        return;
+      }
       if (k === 'o') {
         const order = ['heal', 'fireball', 'meteor'];
         const idx = skillPreview ? order.indexOf(skillPreview) : -1;
@@ -2794,38 +3094,73 @@
     }
 
     // ─── Draw map objects ─────────────────────────────────────
+    // 2.5D 侧俯视:锚点 (o.x,o.y) = 树干落地点(= 服务端碰撞圆心),
+    // 树干由此向「屏幕上方」立起,树冠盖在树干顶部 —— 与敌人/避难所立绘同一视角,
+    // 一眼能看清树干在哪。光源统一设在左上方。
     function drawTree(o) {
       const sx = o.x - camera.x, sy = o.y - camera.y;
       const s = o.size;
-      // Shadow
-      ctx.save(); ctx.globalAlpha = 0.2;
+      const trunkH = s * 0.9;                    // 树干高度
+      const trunkW = Math.max(6, s * 0.26);      // 树干底部宽度
+      const topY = sy - trunkH;                  // 树干顶(树冠底)
+      const cR = s * 0.78;                       // 树冠半径
+      const cy = topY - cR * 0.3;                // 树冠中心
+      ctx.save();
+      // 地面阴影(贴地、扁平椭圆)
+      ctx.globalAlpha = 0.22;
       ctx.fillStyle = '#000';
       ctx.beginPath();
-      ctx.ellipse(sx + s * 0.25, sy + s * 0.55, s * 0.75, s * 0.22, 0, 0, Math.PI * 2);
+      ctx.ellipse(sx, sy + 2, s * 0.66, s * 0.22, 0, 0, Math.PI * 2);
       ctx.fill();
-      ctx.restore();
-      // Trunk
-      ctx.fillStyle = '#5a3a1a';
-      ctx.fillRect(sx - s * 0.1, sy - s * 0.05, s * 0.2, s * 0.45);
-      // Foliage palette per variant
+      ctx.globalAlpha = 1;
+
+      // 树干:上窄下宽的锥形,左亮右暗的横向渐变 → 圆柱体积感
+      const tg = ctx.createLinearGradient(sx - trunkW * 0.5, 0, sx + trunkW * 0.5, 0);
+      tg.addColorStop(0, '#7a5330');
+      tg.addColorStop(0.45, '#5a3617');
+      tg.addColorStop(1, '#38200e');
+      ctx.fillStyle = tg;
+      ctx.beginPath();
+      ctx.moveTo(sx - trunkW * 0.5, sy);
+      ctx.lineTo(sx - trunkW * 0.3, topY + s * 0.12);
+      ctx.lineTo(sx + trunkW * 0.3, topY + s * 0.12);
+      ctx.lineTo(sx + trunkW * 0.5, sy);
+      ctx.closePath();
+      ctx.fill();
+      // 树干竖向高光条
+      ctx.strokeStyle = 'rgba(190,150,100,0.45)';
+      ctx.lineWidth = Math.max(1, trunkW * 0.16);
+      ctx.beginPath();
+      ctx.moveTo(sx - trunkW * 0.16, sy - 2);
+      ctx.lineTo(sx - trunkW * 0.08, topY + s * 0.14);
+      ctx.stroke();
+
+      // 树冠配色变体(底/中/中/顶 由暗到亮)
       const palettes = [
-        ['#1a5c1a','#2a7a2a','#1e6e1e','#266626'],
-        ['#1a4a3a','#2a6a5a','#206050','#285848'],
-        ['#2a3a1a','#3a5a2a','#2e4a1e','#384830'],
+        ['#14521a', '#1e6e24', '#2a8030', '#3a9a40'],
+        ['#14483a', '#1f6252', '#2a7a66', '#37917a'],
+        ['#26361a', '#374e28', '#455e32', '#57743f'],
       ];
       const pal = palettes[o.variant % 3];
+      // 冠下方环境遮蔽(暗底,增强立体)
+      ctx.save();
+      ctx.globalAlpha = 0.35;
       ctx.fillStyle = pal[0];
-      ctx.beginPath(); ctx.arc(sx, sy - s * 0.05, s * 0.88, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = pal[1];
-      ctx.beginPath(); ctx.arc(sx - s * 0.2, sy - s * 0.28, s * 0.62, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = pal[2];
-      ctx.beginPath(); ctx.arc(sx + s * 0.15, sy - s * 0.38, s * 0.58, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = pal[3];
-      ctx.beginPath(); ctx.arc(sx, sy - s * 0.6, s * 0.5, 0, Math.PI * 2); ctx.fill();
-      // Highlight
-      ctx.save(); ctx.globalAlpha = 0.18;
-      ctx.fillStyle = '#aaffaa';
-      ctx.beginPath(); ctx.arc(sx - s * 0.15, sy - s * 0.45, s * 0.28, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(sx, cy + cR * 0.55, cR * 0.9, cR * 0.4, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      // 多球体堆叠的树冠(左上受光)
+      const blob = (dx, dy, rr, c) => { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(sx + dx, cy + dy, rr, 0, Math.PI * 2); ctx.fill(); };
+      blob(0, 0, cR, pal[0]);
+      blob(-cR * 0.5, cR * 0.12, cR * 0.62, pal[1]);
+      blob(cR * 0.48, cR * 0.05, cR * 0.64, pal[1]);
+      blob(cR * 0.06, -cR * 0.48, cR * 0.6, pal[2]);
+      blob(-cR * 0.28, -cR * 0.22, cR * 0.5, pal[2]);
+      blob(cR * 0.24, -cR * 0.18, cR * 0.46, pal[3]);
+      // 左上高光
+      ctx.save(); ctx.globalAlpha = 0.28;
+      ctx.fillStyle = '#d8ffcf';
+      ctx.beginPath(); ctx.arc(sx - cR * 0.4, cy - cR * 0.42, cR * 0.3, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
       ctx.restore();
     }
 
@@ -2850,31 +3185,106 @@
       ctx.restore();
     }
 
-    // 服务端障碍物:按真实碰撞半径绘制的苔石巨砾(玩家会被它挡住/滑过)
+    // 障碍物「巨砾」的不规则轮廓:按 variant 生成稳定(每帧一致)的顶点抖动,
+    // 纵向压扁 → 坐地的立体感;返回顺时针顶点数组。
+    function rockOutline(cx, cy, r, variant) {
+      const n = 10;
+      const ph = variant * 1.7 + 0.5;
+      const pts = [];
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 - Math.PI / 2;
+        const jit = 0.82 + 0.16 * Math.sin(a * 3 + ph) + 0.07 * Math.sin(a * 5 + ph * 2.3);
+        const rr = r * jit;
+        pts.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * 0.8]);
+      }
+      return pts;
+    }
+    // 沿顶点画平滑闭合路径(取相邻中点做二次贝塞尔,得到圆润岩体)
+    function traceSmooth(pts) {
+      const n = pts.length;
+      const mid = (i) => [(pts[i][0] + pts[(i + 1) % n][0]) / 2, (pts[i][1] + pts[(i + 1) % n][1]) / 2];
+      let m = mid(n - 1);
+      ctx.beginPath();
+      ctx.moveTo(m[0], m[1]);
+      for (let i = 0; i < n; i++) { const nm = mid(i); ctx.quadraticCurveTo(pts[i][0], pts[i][1], nm[0], nm[1]); }
+      ctx.closePath();
+    }
+
+    // 调试:在障碍物「落地中心」画出真实碰撞圆(服务端 push-out 用的就是它)。
+    // 圆心 = (o.x, o.y),半径 = o.radius —— 注意它比画出来的立体身子低一截。
+    function drawCollider(o) {
+      const sx = o.x - camera.x, sy = o.y - camera.y;
+      ctx.save();
+      ctx.strokeStyle = o.type === 'tree' ? 'rgba(120,220,140,0.9)' : 'rgba(255,80,80,0.9)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.arc(sx, sy, o.radius, 0, Math.PI * 2);
+      ctx.stroke();
+      // 圆心十字标记
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(sx - 4, sy); ctx.lineTo(sx + 4, sy);
+      ctx.moveTo(sx, sy - 4); ctx.lineTo(sx, sy + 4);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 服务端障碍物:立体巨砾(玩家会被它挡住/滑过)。锚点=落地中心,光从左上。
     function drawObstacle(o) {
       const sx = o.x - camera.x, sy = o.y - camera.y;
       const r = o.radius;
       ctx.save();
       // 地面阴影
-      ctx.globalAlpha = 0.28;
+      ctx.globalAlpha = 0.3;
       ctx.fillStyle = '#000';
       ctx.beginPath();
-      ctx.ellipse(sx + r * 0.12, sy + r * 0.42, r * 1.02, r * 0.42, 0, 0, Math.PI * 2);
+      ctx.ellipse(sx, sy + r * 0.5, r * 1.05, r * 0.4, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.globalAlpha = 1;
-      // 石体(径向渐变模拟受光)
-      const g = ctx.createRadialGradient(sx - r * 0.35, sy - r * 0.35, r * 0.2, sx, sy, r);
-      g.addColorStop(0, '#6b6f7d');
-      g.addColorStop(1, '#3a3d47');
+
+      // 岩体:抬高一点让「底面接地、顶面朝天」,主体左上亮右下暗的线性渐变
+      const pts = rockOutline(sx, sy - r * 0.22, r, o.variant);
+      traceSmooth(pts);
+      const g = ctx.createLinearGradient(sx - r * 0.8, sy - r, sx + r * 0.6, sy + r * 0.7);
+      g.addColorStop(0, '#9498a6');
+      g.addColorStop(0.5, '#5d6270');
+      g.addColorStop(1, '#31343d');
       ctx.fillStyle = g;
-      ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
-      // 顶部苔藓
-      ctx.fillStyle = 'rgba(78,204,163,0.35)';
-      ctx.beginPath(); ctx.arc(sx - r * 0.2, sy - r * 0.35, r * 0.5, 0, Math.PI * 2); ctx.fill();
-      // 边缘描边(勾出碰撞轮廓)
-      ctx.strokeStyle = 'rgba(20,22,28,0.8)';
+      ctx.fill();
+
+      // 顶面受光高光(裁剪到岩体内,画在偏上方的亮块)
+      ctx.save();
+      traceSmooth(pts); ctx.clip();
+      const hg = ctx.createRadialGradient(sx - r * 0.3, sy - r * 0.7, r * 0.1, sx - r * 0.3, sy - r * 0.7, r * 0.95);
+      hg.addColorStop(0, 'rgba(200,206,220,0.55)');
+      hg.addColorStop(1, 'rgba(200,206,220,0)');
+      ctx.fillStyle = hg;
+      ctx.fillRect(sx - r * 1.2, sy - r * 1.2, r * 2.4, r * 1.4);
+      // 顶部苔藓(几簇,variant 决定数量)
+      ctx.fillStyle = 'rgba(74,150,90,0.5)';
+      const moss = 2 + (o.variant % 3);
+      for (let i = 0; i < moss; i++) {
+        const a = -Math.PI / 2 + (i - moss / 2) * 0.7 + o.variant;
+        const mx = sx + Math.cos(a) * r * 0.45;
+        const my = sy - r * 0.55 + Math.sin(a) * r * 0.18;
+        ctx.beginPath(); ctx.ellipse(mx, my, r * 0.26, r * 0.14, 0, 0, Math.PI * 2); ctx.fill();
+      }
+      // 棱裂纹(暗线,暗示切面)
+      ctx.strokeStyle = 'rgba(24,26,32,0.4)';
+      ctx.lineWidth = Math.max(1, r * 0.03);
+      ctx.beginPath();
+      ctx.moveTo(sx - r * 0.1, sy - r * 0.65);
+      ctx.lineTo(sx + r * 0.15, sy - r * 0.1);
+      ctx.lineTo(sx - r * 0.2, sy + r * 0.35);
+      ctx.stroke();
+      ctx.restore();
+
+      // 岩体外描边(勾出碰撞轮廓)
+      traceSmooth(pts);
+      ctx.strokeStyle = 'rgba(18,20,26,0.7)';
       ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.stroke();
       ctx.restore();
     }
 
@@ -2907,6 +3317,18 @@
       return img;
     }
     const spriteOK = img => !!img && img.complete && img.naturalWidth > 0;
+
+    // 避难所小屋贴图(Kenney Tiny Town, CC0;48×32,灰瓦屋顶+窗/门/墙)。缺文件时回退程序化画法。
+    let _hutImg = null, _hutBad = false;
+    function loadHutSprite() {
+      if (_hutBad) return null;
+      if (!_hutImg) {
+        _hutImg = new Image();
+        _hutImg.onerror = () => { _hutBad = true; };
+        _hutImg.src = 'assets/shelter/hut.png';
+      }
+      return _hutImg;
+    }
 
     // Enemy kind visual config (fallback procedural drawing colors)
     // scale:体型缩放(golem/dragon 更大);默认 1。
@@ -3846,8 +4268,9 @@
      * @param g   CanvasRenderingContext2D
      * @param mw  目标宽(px)
      * @param mh  目标高(px)
-     * @param opts { big?: boolean, npcHits?: Array } —— big 时放大点位并高亮 LLM NPC(带名字),
-     *             并把 NPC 屏幕命中框 push 进 npcHits(供点击寻路命中测试)。
+     * @param opts { big?: boolean, npcHits?: Array, shelterHits?: Array } —— big 时放大点位、
+     *             高亮 LLM NPC(带名字)、标注避难所,并把 NPC / 避难所的屏幕命中框分别 push 进
+     *             npcHits / shelterHits(供点击寻路命中测试)。
      */
     function renderMapTo(g, mw, mh, opts = {}) {
       const big = !!opts.big;
@@ -3862,6 +4285,40 @@
       for (const z of zones) {
         g.fillStyle = hexToRgba(z.color, 0.35);
         g.fillRect(z.bounds.x * sx, z.bounds.y * sy, z.bounds.w * sx, z.bounds.h * sy);
+      }
+
+      // 避难所:带色圆环 + 门口篝火橙点(画在障碍物/雾之下、难度带之上)
+      for (const s of shelters) {
+        const scx = s.x * sx, scy = s.y * sy;
+        const scr = Math.max(3, s.radius * sx);
+        g.save();
+        g.strokeStyle = hexToRgba(s.color, 0.9);
+        g.lineWidth = Math.max(1, k * 0.8);
+        g.beginPath();
+        g.arc(scx, scy, scr, 0, Math.PI * 2);
+        g.stroke();
+        g.fillStyle = hexToRgba(s.color, 0.18);
+        g.fill();
+        g.restore();
+        // 篝火橙点
+        g.fillStyle = '#ff9a3c';
+        g.beginPath();
+        g.arc(s.campfire.x * sx, s.campfire.y * sy, Math.max(1.5, 2 * k), 0, Math.PI * 2);
+        g.fill();
+        // 放大地图:盾牌图标 + 名字,并登记点击命中框(点击寻路过去)
+        if (big) {
+          g.font = `${Math.max(12, 7 * k)}px system-ui, sans-serif`;
+          g.textAlign = 'center';
+          g.textBaseline = 'middle';
+          g.fillText('🛡', scx, scy);
+          g.font = '11px system-ui, sans-serif';
+          g.textBaseline = 'bottom';
+          g.lineWidth = 3; g.strokeStyle = 'rgba(0,0,0,0.75)';
+          g.strokeText(s.name, scx, scy - scr - 3);
+          g.fillStyle = '#e8eefc';
+          g.fillText(s.name, scx, scy - scr - 3);
+          if (opts.shelterHits) opts.shelterHits.push({ x: s.x, y: s.y, name: s.name, sx: scx, sy: scy, r: Math.max(scr, 16) });
+        }
       }
 
       // 障碍物:树=绿点,石=灰点(按视觉尺寸缩放)
@@ -3991,7 +4448,8 @@
 
     function drawExpandedMap() {
       npcHits.length = 0;
-      renderMapTo(bigCtx, bigCanvas.width, bigCanvas.height, { big: true, npcHits });
+      shelterHits.length = 0;
+      renderMapTo(bigCtx, bigCanvas.width, bigCanvas.height, { big: true, npcHits, shelterHits });
     }
 
     // ─── 顶部经验条 ────────────────────────────────────────────
@@ -4059,6 +4517,9 @@
       // 难度带:地面着色 + 分隔线 + 带名/推荐等级(在装饰物与实体之下)
       drawZones();
       updateZoneBanner();
+      // 避难所安全圈:地面层着色 + 边界(在装饰物与实体之下)
+      drawShelters();
+      updateShelterState();
 
       // Map boundary glow
       const bx = -camera.x, by = -camera.y;
@@ -4083,7 +4544,7 @@
       // 服务端障碍物拆成两层:石在玩家下,树冠在玩家上(可走到树荫下被遮挡)
       const rocks = [], trees = [];
       for (const o of obstacles) {
-        if (o.type === 'tree') { if (isVisible(o.x, o.y, o.size + 80)) trees.push(o); }
+        if (o.type === 'tree') { if (isVisible(o.x, o.y, o.size * 2.5 + 40)) trees.push(o); }
         else if (isVisible(o.x, o.y, o.radius + 40)) rocks.push(o);
       }
       rocks.sort((a, b) => a.y - b.y);
@@ -4095,6 +4556,7 @@
       // 地面层:武器掉落物 + 生命补给包 + 重击震波环(均在玩家之下,可被玩家覆盖)
       drawDrops();
       drawHealthPacks();
+      drawCampfires();
       drawShockwaves();
       drawSkillRangePreview();
 
@@ -4121,6 +4583,12 @@
 
       // 树(树干挡人,树冠盖在玩家头顶)
       for (const o of trees) drawTree(o);
+
+      // 调试叠加:碰撞圆(画在最上层,红=石/绿=树干)
+      if (showColliders) {
+        for (const o of rocks) drawCollider(o);
+        for (const o of trees) drawCollider(o);
+      }
 
       // ── Particles ───────────────────────────────────────────
       updateFX();
@@ -4211,7 +4679,7 @@
       dawn:  { color: '80,60,110',   alpha: 0.16 },
       day:   { color: '0,0,0',       alpha: 0 },
       dusk:  { color: '150,70,30',   alpha: 0.20 },
-      night: { color: '10,18,55',    alpha: 0.42 },
+      night: { color: '10,18,55',    alpha: 0.30 },
     };
     function drawDayNight(W, H) {
       const t = PHASE_TINT[dayPhase];
@@ -4220,6 +4688,36 @@
       ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle = `rgba(${t.color},${t.alpha})`;
       ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+    }
+
+    // 自身定位标记:画在所有图层最上方(不受迷雾/夜晚/大树遮挡),
+    // 确保无论被围殴、被树挡还是死亡态,都能一眼看到"我在哪"。
+    function drawSelfLocator() {
+      const me = players[myId];
+      if (!me) return;
+      const sx = Math.round((me.targetX ?? me.x) - camera.x);
+      const sy = Math.round((me.targetY ?? me.y) - camera.y);
+      const phase = (frame % 72) / 72;                 // 0..1 循环
+      const wob = Math.sin(phase * Math.PI * 2);        // -1..1
+      const dead = !!me.isDead;
+      const col = dead ? '255,107,129' : '78,204,163';  // 活:青绿  死:红
+      ctx.save();
+      // 脚下脉冲环
+      ctx.strokeStyle = `rgba(${col},0.95)`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(sx, sy + 6, 20 + 4 * wob, 0, Math.PI * 2);
+      ctx.stroke();
+      // 头顶浮动下箭头
+      const ay = sy - 44 - 4 * wob;
+      ctx.fillStyle = `rgb(${col})`;
+      ctx.beginPath();
+      ctx.moveTo(sx, ay + 11);
+      ctx.lineTo(sx - 7, ay);
+      ctx.lineTo(sx + 7, ay);
+      ctx.closePath();
+      ctx.fill();
       ctx.restore();
     }
 

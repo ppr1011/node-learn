@@ -14,6 +14,7 @@ import { GameWorld } from '../../core/GameWorld';
 import { MsgType } from '../../network/Protocol';
 import { GameConfig } from '../../config';
 import { RumorBoard } from '../agent/rumor';
+import { isInAnyShelter } from '../../core/Shelter';
 
 export const PATROL_RADIUS = 200; // 巡逻游荡的最大半径(距出生点)
 const LOW_HP = 0.3; // 残血阈值(逃跑/狂暴触发线)
@@ -42,6 +43,8 @@ export function acquireTarget(ctx: BTContext): boolean {
   let min = enemy.detectionRange;
   for (const p of world.players.values()) {
     if (p.isDead) continue;
+    // 避难所安全圈内的玩家「脱敌」:怪物看不到他 → 丢失目标 → 回落巡逻(不进圈)
+    if (isInAnyShelter(p.position.x, p.position.y)) continue;
     const d = dist(enemy.position.x, enemy.position.y, p.position.x, p.position.y);
     if (d < min) { min = d; nearest = p; }
   }
