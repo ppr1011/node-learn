@@ -1,13 +1,15 @@
 import { WebSocketServer as WSServer, WebSocket } from 'ws';
-import { IncomingMessage } from 'http';
+import { IncomingMessage, Server as HttpServer } from 'http';
 import { Session } from './Session';
 import { decodeMessage, MsgType } from './Protocol';
 import { GameWorld } from '../core/GameWorld';
 import { Player } from '../core/Player';
 import { GameConfig } from '../config';
 import { logger } from '../utils/Logger';
+import { createStaticServer } from './StaticServer';
 
 export class GameWebSocketServer {
+  private http: HttpServer;
   private wss: WSServer;
   private sessions: Map<string, Session> = new Map();
   private playerBySession: Map<string, Player> = new Map();
@@ -16,8 +18,12 @@ export class GameWebSocketServer {
   private nextSessionId = 1;
 
   constructor(private readonly world: GameWorld) {
-    this.wss = new WSServer({ port: GameConfig.PORT });
+    // HTTP(提供 client/ 静态文件)与 WS 共用同一个 server/端口 —— 客户端改用
+    // http://localhost:PORT 打开,以便 3D 渲染器能把 PNG 上传成 WebGL 贴图。
+    this.http = createStaticServer();
+    this.wss = new WSServer({ server: this.http });
     this.setupServer();
+    this.http.listen(GameConfig.PORT);
     this.startHeartbeat();
   }
 
@@ -49,7 +55,7 @@ export class GameWebSocketServer {
       logger.error(`Server error: ${err.message}`);
     });
 
-    logger.info(`WebSocket server listening on port ${GameConfig.PORT}`);
+    logger.info(`HTTP + WebSocket server listening on port ${GameConfig.PORT}`);
   }
 
   private handleMessage(sessionId: string, raw: string): void {
@@ -207,6 +213,7 @@ export class GameWebSocketServer {
     }
 
     this.wss.close();
+    this.http.close();
     logger.info('WebSocket server shut down');
   }
 }

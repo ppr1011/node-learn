@@ -669,6 +669,16 @@
   </div>
 
   <script src="pathfind.js"></script>
+  <!-- 3D 渲染器(?r=3d 时启用):Three.js 经 import map 载入并挂到 window.THREE;
+       render3d.js 是 classic script,与内联主脚本共享全局状态。 -->
+  <script type="importmap">
+  { "imports": { "three": "./vendor/three.module.js" } }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    window.THREE = THREE;
+  </script>
+  <script src="render3d.js"></script>
   <script>
     const WS_URL = (location.protocol === 'file:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')
       ? 'ws://localhost:4000'
@@ -4947,7 +4957,12 @@
       // clear:仅 ambientTint 的暖调
     }
 
-    requestAnimationFrame(render);
+    // 渲染器选择:?r=3d 启动 Three.js 真 3D 渲染器(与 2D render() 互斥),否则走原 2D。
+    if (new URLSearchParams(location.search).get('r') === '3d' && typeof window.startRender3D === 'function') {
+      window.startRender3D();
+    } else {
+      requestAnimationFrame(render);
+    }
   </script>
 </body>
 </html>

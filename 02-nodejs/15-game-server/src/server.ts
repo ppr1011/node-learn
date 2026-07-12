@@ -65,7 +65,7 @@ if (GameConfig.LLM_ENABLED) {
       : 'LLM(Mock, 请配置 .env 中的 DEEPSEEK_API_KEY 或 LLM_LOCAL_ENABLED=1)';
   logger.info(`AI: BehaviorTree + ${mode} | NPCs: ${GameConfig.LLM_NPC_COUNT}`);
 }
-logger.info(`Open client/index.html in browser to play`);
+logger.info(`Play: http://localhost:${GameConfig.PORT}/  (3D beta: http://localhost:${GameConfig.PORT}/?r=3d)`);
 
 // 启动(连持久层 → 开端口 → 起循环)
 bootstrap().catch((err) => {
