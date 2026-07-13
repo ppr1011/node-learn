@@ -22,3 +22,16 @@
 # 在项目根目录下运行任意示例
 npx ts-node 01-typescript/01-basic-types/index.ts
 ```
+
+## 检验学习成果
+
+学完对应主题后,可到考试模块自测:
+
+- 编程题(自动判分):[`03-exams/typescript/programming`](../03-exams/typescript/programming/)
+- 概念自测题(附答案解析):[`03-exams/typescript/quizzes`](../03-exams/typescript/quizzes/)
+
+```bash
+npm run exam:ts     # 运行全部 TypeScript 编程题的自动化测试
+```
+
+详见 [`03-exams/README.md`](../03-exams/README.md)。

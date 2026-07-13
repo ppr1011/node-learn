@@ -29,3 +29,16 @@ npx ts-node 02-nodejs/01-module-system/index.ts
 npm install express dotenv mysql2 jsonwebtoken bcryptjs
 npm install -D @types/express @types/jsonwebtoken @types/bcryptjs
 ```
+
+## 检验学习成果
+
+- 编程题(自动判分):[`03-exams/nodejs/programming`](../03-exams/nodejs/programming/)
+- 概念自测题(附答案解析):[`03-exams/nodejs/quizzes`](../03-exams/nodejs/quizzes/)
+- 综合实战项目:[TODO REST API](../03-exams/projects/01-todo-rest-api/)、[KV 缓存服务](../03-exams/projects/02-kv-cache-service/)
+
+```bash
+npm run exam:node        # Node.js 编程题
+npm run exam:projects    # 综合项目验收测试
+```
+
+详见 [`03-exams/README.md`](../03-exams/README.md)。

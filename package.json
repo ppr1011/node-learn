@@ -3,7 +3,13 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npm run exam",
+    "exam": "node 03-exams/_runner/run.js all all",
+    "exam:ts": "node 03-exams/_runner/run.js typescript all",
+    "exam:node": "node 03-exams/_runner/run.js nodejs all",
+    "exam:projects": "node 03-exams/_runner/run.js projects all",
+    "exam:unit": "node 03-exams/_runner/run.js all unit",
+    "exam:integration": "node 03-exams/_runner/run.js all integration"
   },
   "keywords": [],
   "author": "",
